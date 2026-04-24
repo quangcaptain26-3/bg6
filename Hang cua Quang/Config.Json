@@ -1,0 +1,89 @@
+{
+  "Image": {
+    "Collection_Image_Path": "E:\\Product_Outward\\Collection",
+    "Image_temporary_Path": "E:\\Product_Outward\\Images\\Temporary",
+    "Log_Path": "E:\\Product_Outward\\Log",
+    "Image_Path_After_Inference": "E:\\Product_Outward\\Images\\Inference_Result",
+    "Models_Path": "E:\\Product_Outward\\Models",
+    "IO_Table": "E:\\Product_Outward\\IOTable.csv",
+    "Save_Image_After_Inference": true,
+    "SaveBigImage": true,
+    "BigImage": "E:\\Product_Outward\\BIGImage",
+    "BarcodeImage": "E:\\Product_Outward\\BarcodeImage",
+    "Image_Path_ReadBarcodeImage": "E:\\Product_Outward\\Images\\InferenceBarcodeImage",
+    "ImageStaging": "E:\\Product_Outward\\Images\\ImageStaging",
+    "DAQ": "PCI-1756,BID#0",
+    "AOIIPImage": null
+  },
+  "iniProducer": {
+    "ProducerSDK": "E:\\Product_Outward\\Producer\\x64",
+    "DeviceID": "D1234",
+    "ModuleName": "Appearance",
+    "Station": "Appearance_Inspection",
+    "Plant": "5F-BB1",
+    "Line": "2O",
+    "Campus": "PVN",
+    "Product_Name": "Appearance",
+    "DefaultLanguage": "en" //vi 越南文，zh 中文，en 英文
+  },
+  "SFIS": {
+    "WorkerId": "V24002407",
+    "DeviceId": "314332",
+    "ErrorCode": "BDFA0",
+    "programId": "TSP_BBPE",
+    "programPassword": "wk4jd9",
+    "SFISUP": true,
+    "ErrorCodeStart": true,
+    "NumberofRetest": 1,
+    "ErrorCodeContent": "",
+    "DUTY": "741",
+    "REASON": "ZR"
+  },
+  "Inference": {
+    "Inference_Server_IP": "10.120.138.83",
+    "Service_Name": "AOI-CISCO-48",
+    "Service_Token": "99357214bb0e1dc2606d2e31a3fc67c8",
+    "Service_Version": "v0.4.0.0",
+    //"Service_Weight": "v0.4.0.0.20251110233419.277440",
+    "Service_Weight": "v0.4.0.0.20260423152534.151343",
+    //"Service_Weight": "v0.4.0.0.20260422105538.567151",
+    "CurrentModel": "E:\\Product_Outward\\Models\\C1300\\C1300_48P_4G.XML"
+
+  },
+  "Camerai": {
+    "CameraDevices": 3,
+    //"CameraWidth": 5472,
+    //"CameraHeight": 3648,
+    "CameraWidth": 3840,
+    "CameraHeight": 2748,
+    //"Camera1SN": 21882679,
+    "Camera1SN": 24005101,
+    "Camera2SN": 25268120,
+    "Camera3SN": 24005053
+  },
+  "Robot": {
+    "Robotopen": true,
+    "Production": "robot1",
+    "Address": "192.168.0.1",
+    "ControlPort": 5000,
+    "CommandPort": 2000,
+    "DataPort": 2001,
+    "ModBusIP": "192.168.1.5",
+    "ModBusPort": 502,
+    "ProgramId": 0,
+    "SpeedHigh": 85,
+    "SpeedLow": 70,
+    "PCBValue": 0
+  },
+  "ReadBarcode": {
+    "SNStartBit": 71,
+    "BarcodeLength": 11,
+    "ImageBarcodePoint": "2",
+    "Index": 12,
+    "BarcodeCameraSN": "24005101",
+    "CameraBarcode": true,
+    "DecodeOpen": true,
+    "NoGripTest": true,
+    "dianchiAOI": null
+  }
+}

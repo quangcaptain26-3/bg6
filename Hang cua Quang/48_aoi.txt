@@ -1,0 +1,3451 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+using pegatron.basic;
+using Emgu.CV;
+using Emgu.CV.Structure;
+using Emgu.CV.UI;
+using System.IO;
+using System.Configuration;
+using System.Diagnostics;
+using System.Threading;
+using AdvantechIOCard;
+using System.Threading.Tasks;
+using System.Timers;
+using KEYENCE;
+using Basler;
+using InferenceAPI;
+using ImageCapture.Models;
+using ZXing;
+using Epson.V1;
+using Position = Epson.V1.Robot.Position;
+using System.Text.RegularExpressions;
+using System.Net.Sockets;
+using System.Net;
+using System.Reflection;
+using System.Drawing.Imaging;
+using System.Globalization;
+using System.Resources;
+
+namespace ImageCapture
+{
+    public enum Test_Step
+    {
+        wait_dut_in,
+        Visual1,
+        RobotVisual1,
+        RobotVisual2,
+        RobotVisual3,
+        xuanVisual1,
+        xuanVisual2,
+        ReadBarcode,
+        RobotVisual4,
+        testing,
+        test_finish,
+        error
+    }
+    public enum Test_yoloStep
+    {
+        wait_dut_in,
+        read_barcode,
+        //begin_test,
+        LowerVisual_test
+    }
+    public enum Languages
+    {
+        ChineseSimplified,//简体中文
+        English,//英语
+        vietnamese,//越南文
+        ib
+    }
+    public partial class EdgeToolForm : Form
+    {
+
+        //int element_hight;
+        //int element_width;
+        int current_image;
+        bool AllowCaptureForPredict { get; set; } = false;
+        bool imageUploadAuto { get; set; } = true;
+        string producer_sdk_path { get; set; }
+        string deviceid { get; set; }
+        string isn;
+        string module_name { get; set; }
+        public bool Test_Barcode { get; private set; } = true;
+        public bool camTOP { get; private set; } = false;
+        public bool camRight { get; private set; } = false;
+        public bool camFront { get; private set; } = false;
+        public bool camBehind { get; private set; } = false;
+        public bool camLower { get; private set; } = false;
+        public bool camLeft { get; private set; } = false;
+
+        public string ReadBarcodeIsn { get; private set; }
+
+        public bool ErrorCode { get; private set; } = false;
+        Inference_SDK YoloInferenceSDK;
+        //Image<Rgb, byte> img2;
+        Stopwatch stopWatch = new Stopwatch();
+        Inference_Server predictor;
+        //M2MProducer2 m2m;
+        ProducerMode mode = ProducerMode.online;
+        pegatronLog log = null;
+        Screenshot_Area r1 = new Screenshot_Area();
+        TestMode RunMode = TestMode.Test_Mode;
+        Object syncObject = new object();
+        BaslerVideoCapture[] cap = null;
+        BaslerVideoCapture cap1;
+        List<Small_Image> small_images;
+        InputControl dut_arrive;
+        OutputControl aoi_ready;
+        OutputControl test_finish;
+        public OutputControl Light;
+        TabPage preTabPage = null;
+        bool collectImage = false;
+        int[] CaptureDelay;
+        int i, y;
+        IOCardCollection iocards;
+        Test_Step current_step;
+        Test_yoloStep test_YoloStep;
+        ColorLight colorlight;
+        System.Timers.Timer timer = new System.Timers.Timer(50);
+        System.Timers.Timer Yolotimer = new System.Timers.Timer(50);
+        ManualResetEvent waitCapture = new ManualResetEvent(true);
+        string CollectImagePath = "";
+        public Models.ConfigStruct config;
+        NmodbusHelper NmodbusHelper = new NmodbusHelper();
+        Cameras cam = new Cameras();
+        private string timera;
+        List<Small_Image> images = null;
+        Small_Image SmallImage = new ImageCapture.Small_Image();
+        SFISHelper SFIS = new SFISHelper();
+        Robot robot = new Robot();
+        string ISN { get; set; } = "";
+        public string SFISmsg = "";
+        public int SpeedHight { get; private set; }
+        public int SpeedLow { get; private set; }
+        public bool CameraBarcode { get; private set; } = false;
+        public bool ErrorContent { get; private set; } = false;
+        public bool YoloStart { get; private set; } = false;
+        public string strq = "";
+        public bool dianchiOK { get; private set; } = false;
+        string aoiimageip = "";
+        public bool downcamera1 { get; private set; } = false;
+        public bool downcamera2 { get; private set; } = false;
+        public bool UPcamera1 { get; private set; } = false;
+        public string SmallImage1 = "";
+        public bool test { get; private set; } = false;
+        public bool test2 { get; private set; } = false;
+        public int mm { get; private set; } = 0;
+        public static  CultureInfo cultureinfo;
+        
+        public EdgeToolForm()
+        {
+           
+            InitializeComponent();
+            Config.Load();
+            config = Config.Content;
+            DefaultLanguage = config.iniProducer.DefaultLanguage;
+            cultureinfo = new CultureInfo(DefaultLanguage);
+            tsmiStartButton.Text = tsmiStartButton.Text.Contains("Start") ? GetText("tsmiStartButton.Text") : GetText("Stop");
+            if (tsmiRun.Text.Contains("Run"))
+            { tsmiRun.Text = GetText("tsmiRun.Text"); }
+            else if (tsmiRun.Text.Contains("Test mode"))
+            { tsmiRun.Text = GetText("tsmiNormalTest.Text"); }
+            else if (tsmiRun.Text.Contains("Collect image mode"))
+            { tsmiRun.Text = GetText("tsmiCollectImageMode.Text"); }
+            else
+            {
+                tsmiRun.Text = GetText("tsmiCollectImagepoint.Text");
+            }
+            SetLanguage();
+        }
+        private void Form1_Load(object sender, EventArgs e)
+        {
+          
+            MessageForm iniMessageForm = new MessageForm();
+            iniMessageForm.SetMessage("Start Initial...");
+            iniMessageForm.Show();
+            Config.Load();
+            config = Config.Content;
+            string logDir = config.Image.Log_Path;
+            if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
+            logDir = Path.Combine(logDir, $"{DateTime.Now.ToString("yyyyMMdd")}");
+            if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
+            log = new pegatronLog(Path.Combine(logDir, $"log{DateTime.Now:yyyyMMddHHmmss}.txt"));
+            log.write($"Application Start({Application.ProductVersion})");
+            bool save_images_after_predict = false;
+
+            if (config.Image.Save_Image_After_Inference)
+            {
+                this.Save_Image_After_Predict = config.Image.Save_Image_After_Inference;
+            }
+            else this.Save_Image_After_Predict = false;
+            if (this.Save_Image_After_Predict)
+            {
+                this.Image_Path_After_Predict = config.Image.Image_Path_After_Inference;
+                if (!Directory.Exists(this.Image_Path_After_Predict)) Directory.CreateDirectory(this.Image_Path_After_Predict);
+            }
+            if (config.Image.Save_Image_After_Inference)
+            {
+                this.Image_Path_After_Predict = config.Image.Image_Path_After_Inference;
+                if (!Directory.Exists(config.Image.Image_Path_After_Inference)) Directory.CreateDirectory(config.Image.Image_Path_After_Inference);
+            }
+            if (Directory.Exists(config.Image.Image_Path_After_Inference))
+            {
+                Directory.CreateDirectory(config.Image.Image_Path_ReadBarcodeImage);
+            }
+            if (Directory.Exists(config.Image.ImageStaging))
+            {
+                Directory.CreateDirectory(config.Image.ImageStaging);
+            }
+            camTOP = false;
+            camRight = false;
+            camLower = false;
+            camFront = false;
+            camLeft = false;
+            camBehind = false;
+            CollectImagePath = config.Image.Collection_Image_Path;
+            Predict_Image_Path = config.Image.Image_temporary_Path;
+            Product_Name = config.iniProducer.Product_Name;
+            tslProduct_Name.Text = Product_Name;
+            try
+            {
+                iniProducer();
+            }
+            catch (Exception ex)
+            {
+                log.write($"Initial Producer exception---");
+                log.write(ex.Message);
+                log.write(ex.StackTrace);
+                MessageBox.Show(ex.Message, "Initial Producer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                this.Close();
+            }
+
+            Init_Inference_SDK();
+            SFIS.Login(config.SFIS.DeviceId, config.SFIS.WorkerId, config.SFIS.programId, config.SFIS.programPassword);
+            iniIOcard();
+            small_images = new List<Small_Image>();
+            var devices = EnumAllBaslerCameras.ListCameras();
+            cap = new BaslerVideoCapture[devices.Count];
+            #region Camera
+            colorlight.Initial();
+            iniMessageForm.SetMessage("Initial Camera...");
+            if (devices.Count != config.Camerai.CameraDevices)
+            {
+                iniMessageForm.Close();
+                MessageBox.Show("相機初始化錯誤", "Initial", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                this.Close();
+                return;
+            }
+            else
+            {
+                cap = new BaslerVideoCapture[devices.Count];
+                CaptureDelay = new int[devices.Count];
+                boxes = new List<ImageBox>() { imageBox1, imageBox2, imageBox3, imageBox4, imageBox5, imageBox6, imageBox7, imageBox8,
+                    imageBox9, imageBox10, imageBox11, imageBox12, imageBox13, imageBox14, imageBox15, imageBox16, imageBox17, imageBox18, imageBox19, imageBox20};
+                string dir = config.Image.Image_temporary_Path;
+                try
+                {
+                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    for (int i = 0; i < devices.Count; i++)
+                    {
+                        cap1 = new BaslerVideoCapture(devices[i]);
+
+                        if (config.Camerai.Camera1SN == cap1.serial)
+                        {
+                            UPcamera1 = true;
+                            cap[0] = cap1;
+                            cap1.Open(config.Camerai.CameraWidth, config.Camerai.CameraHeight);
+                            boxes[2].Name = $"{cap1.serial}_{0}";
+                            boxes[3].Name = $"{cap1.serial}_{1}";
+                            boxes[4].Name = $"{cap1.serial}_{2}";
+                            boxes[5].Name = $"{cap1.serial}_{3}";
+                            boxes[6].Name = $"{cap1.serial}_{4}";
+                            boxes[7].Name = $"{cap1.serial}_{5}";
+                            boxes[8].Name = $"{cap1.serial}_{6}";
+                            boxes[9].Name = $"{cap1.serial}_{7}";
+                            boxes[10].Name = $"{cap1.serial}_{8}";
+                            boxes[11].Name = $"{cap1.serial}_{9}";
+                            boxes[12].Name = $"{cap1.serial}_{10}";
+                            boxes[13].Name = $"{cap1.serial}_{11}";
+                            boxes[14].Name = $"{cap1.serial}_{12}";
+                            boxes[15].Name = $"{cap1.serial}_{13}";
+                            boxes[16].Name = $"{cap1.serial}_{14}";
+                            boxes[17].Name = $"{cap1.serial}_{15}";
+                            #region cap1
+                            string cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{0}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{0}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{1}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{1}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{2}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{2}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{3}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{3}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{4}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{4}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{5}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{5}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{6}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{6}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{7}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{7}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{8}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{8}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{9}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{9}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{10}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{10}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{11}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{11}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{12}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{12}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{13}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{13}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{14}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{14}", null);
+                            cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{15}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{15}", null);
+
+                            #endregion
+                        }
+                        else if (config.Camerai.Camera2SN == cap1.serial)
+                        {
+                            cap[1] = cap1;
+                            cap1.Open(config.Camerai.CameraWidth, config.Camerai.CameraHeight);
+                            boxes[0].Name = $"{cap1.serial}_{0}";
+                            string cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{0}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{0}", null);
+
+                        }
+                        else if (config.Camerai.Camera3SN == cap1.serial)
+                        {
+                            downcamera2 = true;
+                            cap[2] = cap1;
+                            cap1.Open(config.Camerai.CameraWidth, config.Camerai.CameraHeight);
+                            boxes[1].Name = $"{cap1.serial}_{0}";
+
+                            string cap_inference_tempPath = Path.Combine(dir, $"{cap1.serial}_{0}");
+                            if (!Directory.Exists(cap_inference_tempPath)) Directory.CreateDirectory(cap_inference_tempPath);
+                            else
+                            {
+                                foreach (string f in Directory.GetFiles(cap_inference_tempPath))
+                                {
+                                    File.Delete(f);
+                                }
+                            }
+                            predict_result.Add($"{cap1.serial}_{0}", null);
+
+                        }
+                    }
+                }
+                catch
+                {
+                    MessageBox.Show("相機初始化失敗", "Initial", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    this.Close();
+                    return;
+                }
+
+            }
+
+            #endregion
+            SpeedHight = config.Robot.SpeedHigh;
+            SpeedLow = config.Robot.SpeedLow;
+            cbDevice.SelectedIndexChanged -= cbDevice_SelectedIndexChanged;
+            cbDevice.DataSource = cap;
+            cbDevice.DisplayMember = "serial";
+            cbDevice.SelectedIndexChanged += cbDevice_SelectedIndexChanged;
+            string current_model = ConfigurationManager.AppSettings["CurrentModel"];
+            LoadParameters(current_model);
+
+            splitContainer1.SplitterDistance = this.Width / 4;
+            LBStationName.Text = config.iniProducer.Product_Name;
+            if (config.Robot.Robotopen)
+            {
+
+                colorlight.Initial();
+                iniMessageForm.SetMessage("Initial Robot...");
+                RobotInit();
+            }
+
+            CbPointName.Items.AddRange(Enum.GetNames(typeof(RobotPositionIndex)));
+            iniMessageForm.Close();
+            NmodbusHelper.Connect(config.Robot.ModBusIP, config.Robot.ModBusPort);
+            //barcodescanner = new Reader(ConfigurationManager.AppSettings["BarcodeScanner"]);
+            //barcodescanner.GetReaderReadResult += GetBarcode;
+            current_step = Test_Step.wait_dut_in;
+            test_YoloStep = Test_yoloStep.wait_dut_in;
+            colorlight.DownLightFalse();
+            colorlight.LightFalse();
+            NmodbusHelper.WriteSinglCoilByAddress("M2000", false);
+            NmodbusHelper.WriteSinglCoilByAddress("M2001", false);
+            NmodbusHelper.WriteSinglCoilByAddress("M2002", false);
+            NmodbusHelper.WriteSinglCoilByAddress("M2003", false);
+            NmodbusHelper.WriteSinglCoilByAddress("M2004", false);
+            NmodbusHelper.WriteSinglCoilByAddress("M2040", false);
+            if (config.ReadBarcode.CameraBarcode)
+            {
+                StartClient1();
+            }
+        }
+
+        private void Init_Inference_SDK()
+        {
+            try
+            {
+                string service_name = config.Inference.Service_Name;
+                string service_token = config.Inference.Service_Token;
+                string service_version = config.Inference.Service_Version;
+                string service_weight = config.Inference.Service_Weight;
+                string ip = config.Inference.Inference_Server_IP;
+                InferenceServerConnected recallback = new InferenceServerConnected(x =>
+                  {
+                      predictor = x;
+                      if (predictor != null)
+                      {
+                          this.BeginInvoke(new Action(() =>
+                          {
+                              this.Text += $"\rInference Model:{predictor.model_information.models[0].name}";
+                              this.Text += $"\rModel Version:{predictor.model_information.models[0].version}";
+                              this.Text += $"\rEdge Tool Version:{Application.ProductVersion}";
+                          }));
+                      }
+                  });
+                Inference_Server.CreateInferenceInstance(
+                    ip,
+                    service_name,
+                    service_token,
+                    service_version,
+                    service_weight,
+                    recallback);
+            }
+            catch (Exception ex)
+            {
+                log.write($"Initial inference engine exception---");
+                log.write(ex.Message);
+                log.write(ex.StackTrace);
+                MessageBox.Show(ex.Message, "Initial Predict SDK", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                this.Close();
+            }
+            if (log != null) log.write("Initial Predict SDK completely.");
+        }
+
+        private void iniIOcard()
+        {
+            try
+            {
+                if (File.Exists(config.Image.IO_Table))
+                {
+                    iocards = new IOCardCollection(config.Image.IO_Table);
+
+                    if (iocards.AddNewCard(config.Image.DAQ))
+                    {
+                        //Light = new OutputControl(iocards, "Light");
+                        colorlight = new ColorLight(iocards);
+                    }
+                    else
+                    {
+                        MessageBox.Show(GetText("IOCardInitialFail"), "Initial", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+                else
+                {
+                    log.write($"{config.Image.IO_Table} is not exist.");
+                    MessageBox.Show(GetText("IOCardInitialFail"), "Initial", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                log.write($"Initial IO card exception---");
+                log.write(ex.Message);
+                log.write(ex.StackTrace);
+                MessageBox.Show(ex.Message, "Init IOCard", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        private void iniProducer()
+        {
+            // producer_sdk_path = ConfigurationManager.AppSettings["ProducerSDK"];
+            producer_sdk_path = config.iniProducer.ProducerSDK;
+            //deviceid = ConfigurationManager.AppSettings["DeviceID"];
+            deviceid = config.iniProducer.DeviceID;
+            //module_name = ConfigurationManager.AppSettings["ModuleName"];
+            module_name = config.iniProducer.ModuleName;
+            //string station_name = ConfigurationManager.AppSettings["Station"];
+            string station_name = config.iniProducer.Station;
+            //string plant = ConfigurationManager.AppSettings["Plant"];
+            string plant = config.iniProducer.Plant;
+            //string line = ConfigurationManager.AppSettings["Line"];
+            string line = config.iniProducer.Line;
+            string campus = config.iniProducer.Campus;
+            string defaultLanguage = config.iniProducer.DefaultLanguage;
+            if (deviceid != null && !string.IsNullOrEmpty(module_name) && !string.IsNullOrEmpty(producer_sdk_path))
+            {
+                try
+                {
+
+                }
+                catch (Exception ex)
+                {
+                    throw ex;
+                }
+            }
+        }
+
+        private void M_ProducerInitialComplete(string sdkName, string version)
+        {
+            UpdateProducerResponse($"M2M SDK Name:{sdkName}, Version:{version}", Color.Blue);
+        }
+
+        private void LoadParameters(string current_model)
+        {
+            log.write("LOAD ROI data.");
+            if (!string.IsNullOrEmpty(current_model) && File.Exists(current_model))
+            {
+                ProductOutward p = XMLHelper.Create<ProductOutward>(current_model);
+                if (p != null)
+                {
+                    Product_Name = p.Name;
+                    ROIS = p.ROIs;
+                }
+                log.write("Load ROI data successfully.");
+            }
+            else
+            {
+                log.write("ROI is null.");
+                ROIS = null;
+            }
+
+        }
+
+        private void Cap_CamImageReady(object sender, Bitmap bmp)
+        {
+            Thread.Sleep(50);
+            Emgu.CV.IImage oldImage = null;
+            try
+            {
+                Image<Rgb, byte> img = new Image<Rgb, byte>(bmp);//new Image<Rgb, byte>(bmp);
+                if (AllowCaptureForPredict)
+                {
+                    Thread.Sleep(100);
+                    Thread th = new Thread(new ParameterizedThreadStart(P));
+                    th.IsBackground = true;
+                    th.Start(new object[] { new Image<Rgb, byte>(bmp), ((BaslerVideoCapture)sender).serial, ((BaslerVideoCapture)sender).index });
+                    AllowCaptureForPredict = false;
+                    waitCapture.Set();
+                }
+                else if (collectImage)
+                {
+                    collectImage = false;
+                    Thread th = new Thread(new ParameterizedThreadStart(CaptureImageOnlyCollection));
+                    th.Start(new object[] { img.Bitmap, DateTime.Now.ToString("yyyyMMddHHmmssff"), ((BaslerVideoCapture)sender).serial, ((BaslerVideoCapture)sender).index });
+                    ImageBox box = boxes.Where(x => x.Name.Equals($"{((BaslerVideoCapture)sender).serial}_{((BaslerVideoCapture)sender).index}")).First();
+                    Emgu.CV.IImage iimg = box.Image;
+                    box.Image = img.Resize(320, 240, Emgu.CV.CvEnum.Inter.Linear);
+                    if (iimg != null) iimg.Dispose();
+                }
+                else if (BarcodeShot == true)
+                {                   
+                    Thread th = new Thread(new ParameterizedThreadStart(BarcodeShotImage));
+                    th.Start(new object[] { img.Bitmap, DateTime.Now.ToString("yyyyMMddHHmmssff"), ((BaslerVideoCapture)sender).serial, ((BaslerVideoCapture)sender).index });
+                    ImageBox box = boxes.Where(x => x.Name.Equals($"{((BaslerVideoCapture)sender).serial}_{((BaslerVideoCapture)sender).index}")).First();
+                    Emgu.CV.IImage iimg = box.Image;
+                    box.Image = img.Resize(320, 240, Emgu.CV.CvEnum.Inter.Linear);
+                    BarcodeShot = false;
+                    if (iimg != null) iimg.Dispose();
+                }
+                //}
+
+                if (displayROI && selectedROI != null)//setting
+                {
+                    img.Draw(new Rectangle(selectedROI.x, selectedROI.y, selectedROI.width, selectedROI.height), new Rgb(255, 255, 0), 8);
+                }
+                if (img != null)
+                {
+                    if (isSetting)
+                    {
+                        //if (oldImage != null)
+                        //{
+                        //    oldImage.Dispose();
+                        //}
+                        //imageBox10.Image = null;
+                        Thread.Sleep(100);
+                        oldImage = imageBox40.Image;
+                        imageBox40.Image = img;
+
+                    }
+                    else
+                    {
+                        img.Dispose();
+                    }
+                    //img.Dispose();
+                }
+                if (oldImage != null) oldImage.Dispose();
+            }
+            catch (Exception ex)
+            {
+                log.write($"Capture image exception---");
+                log.write(ex.Message);
+                log.write(ex.StackTrace);
+                MessageBox.Show(ex.Message, "Cap_CamImageReady", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            //bmp.Dispose();
+        }
+
+
+        private void Cap_CamImageReadyForBarcode(object sender, Bitmap bmp)
+        {
+            Thread.Sleep(50);
+            Emgu.CV.IImage oldImage = null;
+            try
+            {
+                Image<Rgb, byte> img = new Image<Rgb, byte>(bmp);//new Image<Rgb, byte>(bmp);
+                if (AllowCaptureForPredict)
+                {
+                    Thread.Sleep(300);
+                    Thread th = new Thread(new ParameterizedThreadStart(P));
+                    th.IsBackground = true;
+                    th.Start(new object[] { new Image<Rgb, byte>(bmp), ((BaslerVideoCapture)sender).serial, ((BaslerVideoCapture)sender).index });
+                    AllowCaptureForPredict = false;
+                    waitCapture.Set();
+                }
+                else if (collectImage)
+                {
+                    collectImage = false;
+                    Thread th = new Thread(new ParameterizedThreadStart(CaptureImageOnlyCollection));
+                    th.Start(new object[] { img.Bitmap, DateTime.Now.ToString("yyyyMMddHHmmssff"), ((BaslerVideoCapture)sender).serial, ((BaslerVideoCapture)sender).index });
+                    ImageBox box = boxes.Where(x => x.Name.Equals($"{((BaslerVideoCapture)sender).serial}_{((BaslerVideoCapture)sender).index}")).First();
+                    Emgu.CV.IImage iimg = box.Image;
+                    box.Image = img.Resize(320, 240, Emgu.CV.CvEnum.Inter.Linear);
+                    if (iimg != null) iimg.Dispose();
+                }
+                else if (BarcodeShot == true)
+                {
+                    Thread th = new Thread(new ParameterizedThreadStart(BarcodeShotImage));
+                    th.Start(new object[] { img.Bitmap, DateTime.Now.ToString("yyyyMMddHHmmssff"), ((BaslerVideoCapture)sender).serial, ((BaslerVideoCapture)sender).index });
+                    ImageBox box = boxes.Where(x => x.Name.Equals($"{((BaslerVideoCapture)sender).serial}_{((BaslerVideoCapture)sender).index}")).First();
+                    Emgu.CV.IImage iimg = box.Image;
+                    box.Image = img.Resize(320, 240, Emgu.CV.CvEnum.Inter.Linear);
+                    BarcodeShot = false;
+                    if (iimg != null) iimg.Dispose();
+                }
+                //}
+
+                if (displayROI && selectedROI != null)//setting
+                {
+                    img.Draw(new Rectangle(selectedROI.x, selectedROI.y, selectedROI.width, selectedROI.height), new Rgb(255, 255, 0), 8);
+                }
+                if (img != null)
+                {
+                    if (isSetting)
+                    {
+                        //if (oldImage != null)
+                        //{
+                        //    oldImage.Dispose();
+                        //}
+                        //imageBox10.Image = null;
+                        Thread.Sleep(100);
+                        oldImage = imageBox40.Image;
+                        imageBox40.Image = img;
+
+                    }
+                    else
+                    {
+                        img.Dispose();
+                    }
+                    //img.Dispose();
+                }
+                if (oldImage != null) oldImage.Dispose();
+            }
+            catch (Exception ex)
+            {
+                log.write($"Capture image exception---");
+                log.write(ex.Message);
+                log.write(ex.StackTrace);
+                MessageBox.Show(ex.Message, "Cap_CamImageReady", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            //bmp.Dispose();
+        }
+        //手動相機截圖用於讀取條碼
+        private void BarcodeShotImage(object data)
+        {
+            Object[] tmp = data as Object[];
+            Bitmap bmp = tmp[0] as Bitmap;
+            string timeStamp = tmp[1] as string;
+            int serial = (int)tmp[2];
+            int index = (int)tmp[3];
+            timera = timeStamp;
+            string smallImage = Path.Combine(config.Image.BarcodeImage/*, $"{serial}", "BarcodImage"*/);
+            if (!Directory.Exists(smallImage)) Directory.CreateDirectory(smallImage);
+            smallImage = Path.Combine(smallImage, DateTime.Now.ToString("yyyyMMdd"));
+            if (!Directory.Exists(smallImage)) Directory.CreateDirectory(smallImage);
+            int i = int.Parse(config.ReadBarcode.ImageBarcodePoint);
+            try
+            {
+                using (Image<Rgb, byte> img = new Image<Rgb, byte>(bmp))
+                {
+                    img.ROI = Rectangle.Empty;
+                    int position = 0;
+                    foreach (CaptureROI roi in ROIS.Where(x => x.serial == serial && x.index == index))
+                    {
+                        img.ROI = new Rectangle(roi.x, roi.y, roi.width, roi.height);
+                        using (Image<Rgb, byte> img2 = img.Copy())
+                        {
+                            if (position == i)
+                            {
+                                img2.Save(Path.Combine(smallImage, $"{timeStamp}_{serial}_{index}_{position}.jpg"));
+                            }
+                        }
+                        img.ROI = Rectangle.Empty;
+                        position++;
+                    }
+                }
+            }
+            finally
+            {
+                bmp.Dispose();
+                waitCapture.Set();
+            }
+        }
+        private void BIGCaptureImage(Object data)
+        {
+            Object[] tmp = data as Object[];
+            Bitmap bmp = tmp[0] as Bitmap;
+            string timeStamp = tmp[1] as string;
+            int serial = (int)tmp[2];
+            //int index = (int)tmp[3];
+            timera = timeStamp;
+            string bigImage = Path.Combine(config.Image.Collection_Image_Path, $"{serial}", "big");
+            if (!Directory.Exists(bigImage)) Directory.CreateDirectory(bigImage);
+            bigImage = Path.Combine(bigImage, DateTime.Now.ToString("yyyyMMdd"));
+            if (!Directory.Exists(bigImage)) Directory.CreateDirectory(bigImage);
+            try
+            {
+                using (Image<Rgb, byte> img = new Image<Rgb, byte>(bmp))
+                {
+                    img.Save(Path.Combine(bigImage, $"{timeStamp}_{serial}_{ReadBarcodeIsn}.jpg"));
+                    img.ROI = Rectangle.Empty;
+
+                }
+            }
+            finally
+            {
+                bmp.Dispose();
+                waitCapture.Set();
+            }
+        }
+        private void CaptureImageOnlyCollection(Object data)
+        {
+            Object[] tmp = data as Object[];
+            Bitmap bmp = tmp[0] as Bitmap;
+            string timeStamp = tmp[1] as string;
+            int serial = (int)tmp[2];
+            int index = (int)tmp[3];
+            timera = timeStamp;
+            string SN = "";
+            string bigImage = Path.Combine(config.Image.Collection_Image_Path, Product_Name, $"{serial}_{index}");
+            string smallImage = Path.Combine(config.Image.Collection_Image_Path, Product_Name, $"{serial}_{index}");
+            if (!Directory.Exists(bigImage)) Directory.CreateDirectory(bigImage);
+            if (!Directory.Exists(smallImage)) Directory.CreateDirectory(smallImage);
+            bigImage = Path.Combine(bigImage, "big", DateTime.Now.ToString("yyyyMMdd"));
+            smallImage = Path.Combine(smallImage, "small", DateTime.Now.ToString("yyyyMMdd"));
+            if (!Directory.Exists(smallImage)) Directory.CreateDirectory(smallImage);
+            if (!Directory.Exists(bigImage)) Directory.CreateDirectory(bigImage);
+            try
+            {
+                using (Image<Rgb, byte> img = new Image<Rgb, byte>(bmp))
+                {
+                    img.Save(Path.Combine(bigImage, $"{timeStamp}_{serial}_{index}.jpg"));
+                    img.ROI = Rectangle.Empty;
+                    int position = 0;
+                    foreach (CaptureROI roi in ROIS.Where(x => x.serial == serial && x.index == index))
+                    {
+                        img.ROI = new Rectangle(roi.x, roi.y, roi.width, roi.height);
+                        using (Image<Rgb, byte> img2 = img.Copy())
+                        {
+                            //
+                            img2.Save(Path.Combine(smallImage, $"{timeStamp}_{serial}_{index}_{position}.jpg"));
+                        }
+                        img.ROI = Rectangle.Empty;
+                        position++;
+                    }
+
+                }
+            }
+            finally
+            {
+                bmp.Dispose();
+                waitCapture.Set();
+            }
+        }
+
+        private void P(object data)
+        {
+            object[] o = data as object[];
+
+            Image<Rgb, byte> img = o[0] as Image<Rgb, byte>;
+            int serial = (int)o[1];
+            int index = (int)o[2];
+
+            using (img)
+            {
+
+                try
+                {
+                    string predict_temporary_path = Path.Combine(Predict_Image_Path, $"{serial}_{index}");
+
+                    //images = img.Capture(index, ROIS.Where(r => r.index == index).ToList(), predict_temporary_path);
+                    //images = img.Capture(ROIS.Where(r => r.serial == serial).ToList(), predict_temporary_path);
+                    images = img.Capture(ROIS.Where(r => r.serial == serial && r.index == index).ToList(), predict_temporary_path);
+                    all_small_images.Add(images);
+                    foreach (Small_Image small_image in images)
+                    {
+                        Predict(small_image);
+                        if (SmallImage1 == "OK" || SmallImage1 == "net" || SmallImage1 == "label" || SmallImage1 == "logo" || SmallImage1 == "screw" || SmallImage1 == "QR" || SmallImage1 == "bscrew" || SmallImage1 == "C1000" || SmallImage1 == "C1200" || SmallImage1 == "C1300")
+                        {
+                            test = true;
+                        }
+                        else
+                        {
+                            img.Draw(images[mm].r, new Rgb(255, 0, 0), 12);
+                            log.write($"X={images[mm].r.X},Y={images[mm].r.Y},Width={images[mm].r.Width},height={images[mm].r.Height}");
+                            test2 = true;
+                        }
+                        mm = mm + 1;
+                    }
+                    log.write("圖片推論完成");
+                    Emgu.CV.UI.ImageBox box = boxes.Where(x => x.Name == $"{serial}_{index}").First();
+                    mm = 0;
+                    if (test == true && test2 == false)
+                    {
+                        predict_result[$"{serial}_{index}"] = "PASS";
+                        if (img.Width == 3840)
+                        {
+                            img.Draw(message: "PASS",
+                            bottomLeft: new Point(img.Width / 2 - 500, img.Height / 2),
+                            fontFace: Emgu.CV.CvEnum.FontFace.HersheySimplex,
+                            color: new Rgb(0, 255, 0),
+                            thickness: 15,
+                            fontScale: 15.0);
+                        }
+                        else
+                        {
+                            img.Draw(message: "PASS",
+                            bottomLeft: new Point(img.Width / 2 - 200, img.Height / 2),
+                            fontFace: Emgu.CV.CvEnum.FontFace.HersheySimplex,
+                            color: new Rgb(0, 255, 0),
+                            thickness: 15,
+                            fontScale: 10.0);
+                        }
+                    }
+                    else
+                    {
+                        predict_result[$"{serial}_{index}"] = "FAIL";
+                    }
+                    #region ...
+                    //Emgu.CV.UI.ImageBox box = boxes.Where(x => x.Name == $"{serial}").First();
+
+                    //if (images.All(x => x.predictResult == "PASS" || x.predictResult == "1" || x.predictResult == "Ethernet" || x.predictResult == "Label" || x.predictResult == "Logo" || x.predictResult == "Other" || x.predictResult == "Power" || x.predictResult == "screw"))
+                    //{
+                    //    if (img.Width == 3840)
+                    //    {
+                    //        img.Draw(message: "PASS",
+                    //        bottomLeft: new Point(img.Width / 2 - 500, img.Height / 2),
+                    //        fontFace: Emgu.CV.CvEnum.FontFace.HersheySimplex,
+                    //        color: new Rgb(0, 255, 0),
+                    //        thickness: 15,
+                    //        fontScale: 15.0);
+                    //    }
+                    //    else
+                    //    {
+                    //        img.Draw(message: "PASS",
+                    //        bottomLeft: new Point(img.Width / 2 - 200, img.Height / 2),
+                    //        fontFace: Emgu.CV.CvEnum.FontFace.HersheySimplex,
+                    //        color: new Rgb(0, 255, 0),
+                    //        thickness: 15,
+                    //        fontScale: 10.0);
+                    //    }
+
+                    //    predict_result[$"{serial}_{index}"] = "PASS";
+
+                    //}
+                    //else
+                    //{
+                    //    predict_result[$"{serial}_{index}"] = "FAIL";
+                    //    ParallelLoopResult result = Parallel.For(0, images.Count, i =>
+                    //    {
+                    //        if (images[i].predictResult == "PASS")
+                    //        {
+
+                    //        }
+                    //        else
+                    //        {
+                    //            img.Draw(images[i].r, new Rgb(255, 0, 0), 12);
+                    //            log.write($"X={images[i].r.X},Y={images[i].r.Y},Width={images[i].r.Width},height={images[i].r.Height}--{predict_result}");
+                    //        }
+                    //    });
+                    //}
+                    #endregion
+                    test = false;
+                    test2 = false;
+                    this.Invoke(new Action(() =>
+                    {
+                        box.Image = img.Resize(320, 240, Emgu.CV.CvEnum.Inter.Linear);
+                        box.Refresh();
+                    }
+                    ));
+                }
+                catch (Exception ex)
+                {
+                    log.write($"Predict process exception---");
+                    log.write(ex.Message);
+                    log.write(ex.StackTrace);
+                    throw ex;
+                }
+            }
+        }
+
+        public void UpdateStatus(string msg, Color color)
+        {
+            this.Invoke(new Action<string, Color>((x, y) =>
+            {
+
+                tsslStatus.Text = msg;
+                tsslStatus.ForeColor = color;
+
+            }), new object[] { msg, color });
+        }
+        public void UpdateMsg(string msg, Color color)
+        {
+            this.Invoke(new Action<string, Color>((x, y) =>
+            {
+                lbPredictionResult2.Text = msg;
+                lbPredictionResult2.BackColor = color;
+                lbPredictionResult2.ForeColor = Color.White;
+            }), new object[] { msg, color });
+        }
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            NmodbusHelper.DisConnect();
+            if (cap1 != null && cap1.IsOpen)
+            {
+                cap1.CamImageReady -= Cap_CamImageReady;
+
+                //cap1.OneShot();
+                //Thread.Sleep(10);
+                cap1.Stop();
+
+                //cap1.Dispose();
+            }
+            //cbDevice.DataSource = null;
+            if (cap != null)
+            {
+                foreach (BaslerVideoCapture cap1 in cap)
+                {
+                    //if (cap != null && cap.IsOpen)
+                    //{
+                    //cap.Stop();
+                    //Thread.Sleep(50);
+                    //cap.CamImageReady -= Cap_CamImageReady;
+                    ////Thread.Sleep(50);
+                    ////cap.Stop();
+                    //cap.Dispose();
+                    //}
+                    //else if (cap != null)
+                    //{
+                    if (cap1 != null)
+                    {
+                        cap1.CamImageReady -= Cap_CamImageReady;
+                        cap1.Dispose();
+                    }
+
+                    //}
+                }
+            }
+
+            // barcodescanner.GetReaderReadResult -= GetBarcode;
+            //if (barcodescanner != null) barcodescanner.Dispose();
+        }
+
+        public void UpdateProducerResponse(string msg, Color color)
+        {
+            this.Invoke(new Action<string, Color>((x, y) =>
+            {
+
+                tsslM2MResponse.Text = msg;
+                tsslM2MResponse.ForeColor = color;
+
+            }), new object[] { msg, color });
+        }
+
+
+        private void F_UpdatePosition(Screenshot_Area positions)
+        {
+            r1 = positions;
+        }
+
+
+
+        private void btnPrediction_Click(object sender, EventArgs e)
+        {
+            string Btnstart = "";
+            string ProductName = "";
+            string ProductNamecaption = "";
+            string ReadBarcode = "";
+            string stop = "";
+            Btnstart = GetText("tsmiStartButton.Text");
+            ProductName = GetText("NoLoadFile");
+            ProductNamecaption = "Run Predict Process";
+            ReadBarcode = GetText("NoReadMothod"); ;
+            stop = GetText("Stop");
+            if (tsmiStartButton.Text.Contains("Start"))
+            {
+                if (string.IsNullOrEmpty(this.Product_Name) /*|| ROIS == null || ROIS.Count == 0*/)
+                {
+                    MessageBox.Show(ProductName, ProductNamecaption, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                //else if (config.ReadBarcode.CameraBarcode && !RtnCamera.Checked && !RtnScanningGun.Checked)
+                //{
+                //    MessageBox.Show(ReadBarcode, "ReadBarcode Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                //}
+                else
+                {
+                    if (config.SFIS.SFISUP)
+                    {
+                        Login_Init();
+                    }
+
+                    colorlight.Start();
+
+                    ActiveControl = SNtextBox;
+                    SNtextBox.Enabled = true;
+                    SNtextBox.SelectAll();
+                    SNtextBox.Focus();
+                    if (Directory.Exists(aoiimageip))
+                    {
+                        File.Delete(aoiimageip);
+                    }
+                    timer.Elapsed += Timer_Elapsed;
+                    timer.Enabled = true;
+                    timer.AutoReset = false;
+                    tsmiStartButton.Text = stop;
+                    i = int.Parse(TBSerial.Text);
+                    y = int.Parse(TBIndex.Text);
+                }
+
+            }
+            else
+            {
+                //aoi_ready.WriteState(false);
+                timer.Elapsed -= Timer_Elapsed;
+                timer.Stop();
+                tsmiStartButton.Text = Btnstart;
+            }
+        }
+        public void LowerLight(bool on)
+        {
+
+        }
+        public void ALLLight(bool on)
+        {
+            if (on)
+            {
+                Light.WriteState(false);
+            }
+            else
+            {
+                Light.WriteState(true);
+            }
+        }
+
+        public void ImageNull()
+        {
+            imageBox1.Image = null;
+            imageBox2.Image = null;
+            imageBox3.Image = null;
+            imageBox4.Image = null;
+            imageBox5.Image = null;
+            imageBox6.Image = null;
+            imageBox7.Image = null;
+            imageBox8.Image = null;
+            imageBox9.Image = null;
+            imageBox10.Image = null;
+            imageBox11.Image = null;
+            imageBox12.Image = null;
+            imageBox13.Image = null;
+            imageBox14.Image = null;
+            imageBox15.Image = null;
+            imageBox16.Image = null;
+            imageBox17.Image = null;
+            imageBox18.Image = null;
+            imageBox19.Image = null;
+            imageBox20.Image = null;
+            UpdateMsg(GetText("WaitInspect"), Color.Blue);
+
+        }
+        public bool Dut_Ready { get { return dut_arrive.GetState(); } }
+        private void Timer_Elapsed(object sender, ElapsedEventArgs e)
+        {
+            timer.Stop();
+            colorlight.Normal();
+            switch (current_step)
+            {
+                case Test_Step.wait_dut_in:
+
+                    if (RunMode == TestMode.Collect_Image_Point)
+                    {
+                        ImageNull();
+                        cap1 = cap[i];
+                        cap1.index = y;
+                        if (CameraCapture(cap1))
+                        {
+                            Thread.Sleep(100);
+                            current_step = Test_Step.wait_dut_in;
+                        }
+                    }
+                    else
+                    {
+                        if (NmodbusHelper.ReadSinglCoilByAddressName("M2500", 1))
+                        {
+                            ImageNull();
+                            current_step = Test_Step.Visual1;
+                        }
+                    }
+                    break;
+                case Test_Step.Visual1:
+                    if (NmodbusHelper.ReadSinglCoilByAddressName("M2500", 1))
+                    {
+                        colorlight.DownLightOpen();
+                        cap1 = cap[1];
+                        cap1.index = 0;
+                        if (CameraCapture(cap1))
+                        {
+                            cap1 = cap[2];
+                            cap1.index = 0;
+                            if (CameraCapture(cap1))
+                            {
+                                NmodbusHelper.WriteSinglCoilByAddress("M2000", true);
+                                Thread.Sleep(100);
+                                NmodbusHelper.WriteSinglCoilByAddress("M2000", false);
+                                colorlight.DownLightFalse();
+                                current_step = Test_Step.RobotVisual1;
+                            }
+                        }
+                    }
+                    break;
+                #region 下视觉另外两次
+                //case Test_Step.Visual2:
+                //    if (NmodbusHelper.ReadSinglCoilByAddressName("M2500", 1))
+                //    {
+
+                //        cap1 = cap[1];
+                //        cap1.index = 1;
+                //        if (CameraCapture(cap1))
+                //        {
+                //            cap1 = cap[2];
+                //            cap1.index = 1;
+                //            if (CameraCapture(cap1))
+                //            {
+                //                NmodbusHelper.WriteSinglCoilByAddress("M2000", true);
+                //                Thread.Sleep(200);
+                //                NmodbusHelper.WriteSinglCoilByAddress("M2000", false);
+                //                current_step = Test_Step.Visual3;
+                //            }
+                //        }
+                //    }
+                //    break;
+                //case Test_Step.Visual3:
+                //    if (NmodbusHelper.ReadSinglCoilByAddressName("M2500", 1))
+                //    {
+                //        cap1 = cap[1];
+                //        cap1.index = 2;
+                //        if (CameraCapture(cap1))
+                //        {
+                //            cap1 = cap[2];
+                //            cap1.index = 2;
+                //            if (CameraCapture(cap1))
+                //            {
+                //                NmodbusHelper.WriteSinglCoilByAddress("M2000", true);
+                //                Thread.Sleep(200);
+                //                NmodbusHelper.WriteSinglCoilByAddress("M2000", false);
+                //                current_step = Test_Step.RobotVisual1;
+                //            }
+                //        }
+                //    }
+                //break;
+                #endregion
+                case Test_Step.RobotVisual1:
+                    if (NmodbusHelper.ReadSinglCoilByAddressName("M2501", 1))
+                    {
+                        colorlight.LightOPen();
+                        NmodbusHelper.WriteSinglCoilByAddress("M2040", true);
+                        robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.SVison01, 0);
+                        Thread.Sleep(50);
+                        cap1 = cap[0];
+                        cap1.index = 0;
+                        if (CameraCapture(cap1))
+                        {
+                            robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.SVison02, 0);
+                            Thread.Sleep(50);
+                            cap1 = cap[0];
+                            cap1.index = 1;
+                            if (CameraCapture(cap1))
+                            {
+                                robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.SVison03, 0);
+                                Thread.Sleep(50);
+                                cap1 = cap[0];
+                                cap1.index = 2;
+                                if (CameraCapture(cap1))
+                                {
+                                    robot.Fcn21_MoveToPointsCP(config.Robot.SpeedHigh, Robot.MoveMode.GO, new int[] {
+                                        (int)RobotPositionIndex.CSafe, (int)RobotPositionIndex.CVison21 }, new int[] { 0, 0, 0 });
+                                    current_step = Test_Step.RobotVisual2;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                case Test_Step.RobotVisual2:
+                    if (NmodbusHelper.ReadSinglCoilByAddressName("M2501", 1))
+                    {
+                        robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.CVison21, 0);
+                        cap1 = cap[0];
+                        cap1.index = 3;
+                        if (CameraCapture(cap1))
+                        {
+                            robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.CVison22, 0);
+                            Thread.Sleep(50);
+                            cap1 = cap[0];
+                            cap1.index = 4;
+                            if (CameraCapture(cap1))
+                            {
+                                robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.CVison23, 0);
+                                Thread.Sleep(50);
+                                cap1 = cap[0];
+                                cap1.index = 5;
+                                if (CameraCapture(cap1))
+                                {
+                                    robot.Fcn21_MoveToPointsCP(config.Robot.SpeedHigh, Robot.MoveMode.GO, new int[] { (int)RobotPositionIndex.CSafe,
+                                        (int)RobotPositionIndex.Home, (int)RobotPositionIndex.HSafe, (int)RobotPositionIndex.HVison31 }, new int[] { 0, 0, 0 });
+
+                                    Thread.Sleep(50);
+                                    current_step = Test_Step.RobotVisual3;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                case Test_Step.RobotVisual3:
+                    if (NmodbusHelper.ReadSinglCoilByAddressName("M2501", 1))
+                    {
+                        robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.HVison31, 0);
+                        //Thread.Sleep(100);
+                        cap1 = cap[0];
+                        cap1.index = 6;
+                        if (CameraCapture(cap1))
+                        {
+                            robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.HVison32, 0);
+                            Thread.Sleep(50);
+                            cap1 = cap[0];
+                            cap1.index = 7;
+                            if (CameraCapture(cap1))
+                            {
+                                NmodbusHelper.WriteSinglCoilByAddress("M2040", false);
+                                NmodbusHelper.WriteSinglCoilByAddress("M2001", true);
+                                Thread.Sleep(100);
+                                NmodbusHelper.WriteSinglCoilByAddress("M2001", false);
+                                current_step = Test_Step.xuanVisual1;
+
+                            }
+                        }
+                    }
+                    break;
+                case Test_Step.xuanVisual1:
+                    if (NmodbusHelper.ReadSinglCoilByAddressName("M2502", 1))
+                    {
+                        NmodbusHelper.WriteSinglCoilByAddress("M2040", true);
+                        robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.HVison33, 0);
+                        Thread.Sleep(50);
+                        cap1 = cap[0];
+                        cap1.index = 8;
+                        if (CameraCapture(cap1))
+                        {
+                            robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.HVison34, 0);
+                            Thread.Sleep(50);
+                            cap1 = cap[0];
+                            cap1.index = 9;
+                            if (CameraCapture(cap1))
+                            {
+                                robot.Fcn21_MoveToPointsCP(config.Robot.SpeedHigh, Robot.MoveMode.GO, new int[] { (int)RobotPositionIndex.HSafe,
+                                    (int)RobotPositionIndex.Home, (int)RobotPositionIndex.CSafe, (int)RobotPositionIndex.CVison24 }, new int[] { 0, 0, 0 });
+                                Thread.Sleep(50);
+                                current_step = Test_Step.xuanVisual2;
+
+                            }
+                        }
+                    }
+                    break;
+                case Test_Step.xuanVisual2:
+                    if (NmodbusHelper.ReadSinglCoilByAddressName("M2502", 1))
+                    {
+                        robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.CVison24, 0);
+                        cap1 = cap[0];
+                        cap1.index = 10;
+                        if (CameraCapture(cap1))
+                        {
+                            robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.CVison25, 0);
+                            Thread.Sleep(50);
+                            cap1 = cap[0];
+                            cap1.index = 11;
+                            if (CameraCapture(cap1))
+                            {
+                                robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.CVison26, 0);
+                                Thread.Sleep(50);
+                                cap1 = cap[0];
+                                cap1.index = 12;
+                                if (CameraCaptureForBarcode(cap1))
+                                {
+                                    if (config.ReadBarcode.CameraBarcode)
+                                    {
+                                        cap1 = cap[0];
+                                        cap1.index = 12;
+                                        if (CameraCap(cap1))
+                                        {
+
+                                        }
+                                    }
+                                    robot.Fcn21_MoveToPointsCP(config.Robot.SpeedHigh, Robot.MoveMode.GO, new int[] { (int)RobotPositionIndex.CSafe,
+                                        (int)RobotPositionIndex.SSafe, (int)RobotPositionIndex.SVison04 }, new int[] { 0, 0, 0 });
+                                    Thread.Sleep(100);
+                                    if (config.ReadBarcode.CameraBarcode)
+                                    {
+                                        current_step = Test_Step.ReadBarcode;
+                                    }
+                                    else
+                                    {
+                                        current_step = Test_Step.RobotVisual4;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    break;
+                case Test_Step.ReadBarcode:
+                    CameraReadBarcode();
+                    current_step = Test_Step.RobotVisual4;
+                    break;
+                case Test_Step.RobotVisual4:
+                    if (NmodbusHelper.ReadSinglCoilByAddressName("M2502", 1))
+                    {
+                        //Thread.Sleep(100);
+                        NmodbusHelper.WriteSinglCoilByAddress("M2040", false);
+
+                        robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.SVison04, 0);
+                        NmodbusHelper.WriteSinglCoilByAddress("M2004", true);
+                        cap1 = cap[0];
+                        cap1.index = 13;
+                        if (CameraCapture(cap1))
+                        {
+                            robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.SVison05, 0);
+                            Thread.Sleep(50);
+                            cap1 = cap[0];
+                            cap1.index = 14;
+                            if (CameraCapture(cap1))
+                            {
+                                robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.SVison06, 0);
+                                Thread.Sleep(50);
+                                cap1 = cap[0];
+                                cap1.index = 15;
+                                if (CameraCapture(cap1))
+                                {
+                                    NmodbusHelper.WriteSinglCoilByAddress("M2002", true);
+                                    Thread.Sleep(100);
+                                    NmodbusHelper.WriteSinglCoilByAddress("M2002", false);
+                                    robot.Fcn20_MoveToPoint(config.Robot.SpeedHigh, Robot.MoveMode.GO, (int)RobotPositionIndex.Home, 0);
+                                    NmodbusHelper.WriteSinglCoilByAddress("M2004", false);
+                                    colorlight.LightFalse();
+                                    current_step = Test_Step.testing;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                //等待测试
+                case Test_Step.testing:
+                    Invoke(new updateYieldHandler(ISNBarcode));
+
+                    if (NewBarcodeImage())
+                    {
+                        if (RunMode == TestMode.Test_Mode)
+                        {
+                            if (stopWatch.ElapsedMilliseconds < 15000)
+                            {
+                                if (predict_result.All(x => x.Value != null))
+                                {
+                                    log.write("All predicts have answers. Enter test_finish step");
+                                    current_step = Test_Step.test_finish;
+                                }
+                            }
+                            else//超時
+                            {
+                                log.write("Wait predict result time out.");
+                                current_step = Test_Step.error;
+                            }
+                        }
+                        //用于图片收集不进行推论并一直给手臂PASS信号
+                        else
+                        {
+                            if (stopWatch.ElapsedMilliseconds < 15000)
+                            {
+                                log.write("圖片收集完成");
+
+                                Thread.Sleep(500);
+                                current_step = Test_Step.wait_dut_in;
+                            }
+                            else
+                            {
+                                log.write("Wait predict result time out.");
+                                current_step = Test_Step.error;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        log.write("未能识别到条码!!!");
+                        //MessageBox.Show(GetText("CantReadBarcode"), "ReadBarcode", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        current_step = Test_Step.error;
+                    }
+                    break;
+
+                case Test_Step.test_finish:
+                    //NmodbusHelper.WriteSinglCoilByAddress("M2003", true);
+
+                    if (predict_result.All(x => x.Value.Equals("PASS")))
+                    {
+                        log.write("Predict result pass.");
+                        if (config.SFIS.SFISUP)
+                        {
+                            PASS_Function(ReadBarcodeIsn,"PASS");
+                            if (SFISresult)
+                            {
+                                UpdateMsg($"Pass---{SFISmsg}", Color.Green);
+                            }
+                            else
+                            {
+                                UpdateMsg($"Pass---{SFISmsg}", Color.Green);
+                            }
+                        }
+                        else
+                        {
+                            UpdateMsg("Pass", Color.Green);
+
+                        }
+                        CountPass++;
+                        Invoke(new updateYieldHandler(updateYield));
+                        //NmodbusHelper.WriteSinglCoilByAddress("M2005", true);
+                        //Thread.Sleep(200);
+                        //NmodbusHelper.WriteSinglCoilByAddress("M2005", false);
+                        log.write("Wait next dut arrive.");
+                        current_step = Test_Step.wait_dut_in;
+                    }
+                    else
+                    {
+                        log.write("Predict result fail.");
+                        UpdateMsg("Fail", Color.Red);
+                        colorlight.SNError();
+                        if (config.SFIS.SFISUP)
+                        {
+                            PASS_Function(ReadBarcodeIsn, "BDFA01");
+                            if (SFISresult && ErrorCode == false)
+                            {
+                                UpdateMsg($"Fail---{SFISmsg}", Color.Green);
+                            }
+                            else if (!SFISresult && ErrorCode == false)
+                            {
+                                UpdateMsg($"Fail---{SFISmsg}", Color.Green);
+                            }
+                            else if (ErrorCode == true)
+                            {
+                                UpdateMsg(GetText("Locked"), Color.Red);
+
+                            }
+                        }
+                        else
+                        {
+                            UpdateMsg("Fail", Color.Red);
+                        }
+                        CounFail++;
+                        Invoke(new updateYieldHandler(updateYield));
+                        //NmodbusHelper.WriteSinglCoilByAddress("M2003", true);
+                        //Thread.Sleep(200);
+                        //NmodbusHelper.WriteSinglCoilByAddress("M2003", false);
+                        log.write("Wait next dut arrive.");
+                        current_step = Test_Step.wait_dut_in;
+                    }
+                    break;
+                case Test_Step.error:
+                    UpdateMsg(GetText("InspectFail"), Color.Gray);
+                    colorlight.Error(2000);
+                    current_step = Test_Step.wait_dut_in;
+                    break;
+            }
+            timer.Start();
+        }
+        public void Predict(Small_Image small_image)
+        {
+            try
+            {
+                string isn = Path.GetFileNameWithoutExtension(small_image.imagePath);
+                //int ret = -1;
+                string resp_info = null;
+                {
+
+                    var predict_result = predictor.Predict(
+                        Product_Name,
+                        new List<string> { small_image.imagePath },
+                        new List<string> { isn },
+                        null);                 //(small_image.imagePath, dut_info, ref resp_info);
+                    string result = predict_result.outputs[0].results[0].category_name;
+                    resp_info = predict_result.ToString();
+
+                    if (config.SFIS.ErrorCodeStart && ErrorContent == true)
+                    {
+                        ErrorCode = true;
+                    }
+                    else
+                    {
+                        ErrorCode = false;
+                    }
+                    log.write($"{result}----回傳結果");
+                    //SmallImage1 = result;
+                    SmallImage1 = small_image.mask ? "PASS" : result;
+
+                    small_image.predictResult = result;
+                    if (config.ReadBarcode.CameraBarcode)
+                    {
+                        small_image.SavenewImage(config.Image.ImageStaging, Product_Name);
+                    }
+                    else
+                    {
+                        small_image.Save(this.Image_Path_After_Predict, Product_Name);
+                    }
+
+
+                    //update result for some mask
+                    small_image.predictResult = small_image.mask ? "PASS" : (result.Equals(small_image.category) ? "PASS" : result);
+                    //small_image.predictResult = small_image.mask ? "1" : (!result.Equals(small_image.category) ? "0" : result);
+                    log.write($"Predict status:{small_image.imagePath}  predict--->{result}");
+
+                }
+            }
+            catch (Exception ex)
+            {
+                log.write($"Predict exception:{ex.Message}");
+                log.write(ex.StackTrace);
+                return;
+                //MessageBox.Show(ex.Message, "Predict error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        private void tbPSelectModel_SelectedIndexChanged(object sender, EventArgs e)
+        {
+
+
+            if (cap1 != null)
+            {
+                cap1.CamImageReady -= Cap_CamImageReady;
+            }
+            //cbDevice.DataSource = null;
+            //cbDevice.Refresh();
+            cap1.Stop();
+            UItimer.Stop();
+            if (preTabPage == tbIO)
+            {
+                UItimer.Tick -= CheckInputIOStatus;
+            }
+            isSetting = false;
+            robotimage = false;
+            if (tbPSelectModel.SelectedTab.Name == "tbPPerformance")
+            {
+
+            }
+            else if (tbPSelectModel.SelectedTab.Name == "tpRobot")
+            {
+
+            }
+            else if (tbPSelectModel.SelectedTab.Name == "tpSetting")
+            {
+                if (cap1 != null)
+                {
+                    cap1.CamImageReady -= Cap_CamImageReady;
+                    Thread.Sleep(100);
+                    if (cap1 == (BaslerVideoCapture)cbDevice.SelectedItem)
+                    {
+                        ReflashSettingUI();
+                        cap1.CamImageReady += Cap_CamImageReady;
+                        Thread.Sleep(100);
+                        cap1.ContinuousShot();
+                    }
+                    else
+                    {
+                        cap1.Stop();
+                        Thread.Sleep(50);
+                        cap1.CamImageReady -= Cap_CamImageReady;
+                        Thread.Sleep(50);
+                        //cap1 = null;
+                        cap1 = (BaslerVideoCapture)cbDevice.SelectedItem;
+                        cap1.CamImageReady += Cap_CamImageReady;
+                        ReflashSettingUI();
+                        cap1.ContinuousShot();
+                    }
+
+                }
+                else
+                {
+                    if (cap.Count() > 0)
+                    {
+                        cap1 = (BaslerVideoCapture)cbDevice.SelectedItem;
+                        cap1.CamImageReady += Cap_CamImageReady;
+                        ReflashSettingUI();
+                        cap1.ContinuousShot();
+                    }
+
+                }
+
+                isSetting = true;
+            }
+            else if (tbPSelectModel.SelectedTab.Name == "tbIO")
+            {
+                Thread.Sleep(100);
+                UItimer.Tick += CheckInputIOStatus;
+                UItimer.Start();
+            }
+        }
+        private bool CameraCapture(BaslerVideoCapture cap)
+        {
+            log.write($"{cap.serial} allow capture.");
+            if (RunMode == TestMode.Test_Mode) AllowCaptureForPredict = true;
+            else collectImage = true;
+            waitCapture.Reset();
+            cap.CamImageReady += Cap_CamImageReady;
+            cap.OneShot();
+            waitCapture.WaitOne(5000);
+            if ((RunMode == TestMode.Test_Mode ? AllowCaptureForPredict : collectImage) == false)
+            {
+                log.write($"{cap.serial} capture finish.");
+                cap.CamImageReady -= Cap_CamImageReady;
+                Thread.Sleep(100);
+                cap.Stop();
+                return true;
+            }
+            else//capture time out
+            {
+                log.write($"{cap.serial} capture time out.");
+                UpdateStatus($"camera:{cap.serial} capture image time out.", Color.Red);
+                cap.Stop();
+                return false;
+            }
+
+        }
+
+        private bool CameraCaptureForBarcode(BaslerVideoCapture cap)
+        {
+            log.write($"{cap.serial} allow capture.");
+            if (RunMode == TestMode.Test_Mode) AllowCaptureForPredict = true;
+            else collectImage = true;
+            waitCapture.Reset();
+            cap.CamImageReady += Cap_CamImageReadyForBarcode;
+            cap.OneShot();
+            waitCapture.WaitOne(5000);
+            if ((RunMode == TestMode.Test_Mode ? AllowCaptureForPredict : collectImage) == false)
+            {
+                log.write($"{cap.serial} capture finish.");
+                cap.CamImageReady -= Cap_CamImageReadyForBarcode;
+                Thread.Sleep(500);
+                cap.Stop();
+                return true;
+            }
+            else//capture time out
+            {
+                log.write($"{cap.serial} capture time out.");
+                UpdateStatus($"camera:{cap.serial} capture image time out.", Color.Red);
+                cap.Stop();
+                return false;
+            }
+
+        }
+        //手動測試相機讀取條碼並單獨儲存在其他文件夾下
+        private bool CameraCap(BaslerVideoCapture cap)
+        {
+            string ReadBarcode = "";
+            if (config.ReadBarcode.CameraBarcode)
+            {
+                log.write($"{cap.serial} 相機条码截圖.");
+                waitCapture.Reset();
+                cap.CamImageReady += Cap_CamImageReady1;
+                cap.OneShot();
+                waitCapture.WaitOne(5000);
+                Thread.Sleep(500);
+                cap.CamImageReady -= Cap_CamImageReady1;
+                Thread.Sleep(500);
+                cap.Stop();
+                return true;
+            }
+            else
+            {
+                log.write("相機截取條碼圖片失敗");
+                ReadBarcode = GetText("IsSelectCamera");
+                MessageBox.Show(ReadBarcode, "ReadBarcode", MessageBoxButtons.OKCancel);
+                cap.Stop();
+                return false;
+            }
+        }
+        private void Cap_CamImageReady1(object sender, Bitmap bmp)
+        {
+            Thread.Sleep(50);
+            try
+            {
+                Image<Rgb, byte> img = new Image<Rgb, byte>(bmp);//new Image<Rgb, byte>(bmp);
+
+                Thread th1 = new Thread(new ParameterizedThreadStart(BarcodeShotImage));
+                th1.Start(new object[] { img.Bitmap, DateTime.Now.ToString("yyyyMMddHHmmssff"), ((BaslerVideoCapture)sender).serial, ((BaslerVideoCapture)sender).index });
+
+            }
+            catch (Exception ex)
+            {
+                log.write($"Capture image exception---");
+                log.write(ex.Message);
+                log.write(ex.StackTrace);
+                MessageBox.Show(ex.Message, "Cap_CamImageReady", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            //bmp.Dispose();
+        }
+        private void RunMode_Click(object sender, EventArgs e)
+        {
+            if (sender.Equals(tsmiNormalTest))
+            {
+                RunMode = TestMode.Test_Mode;
+                tsmiRun.Text = GetText("tsmiNormalTest.Text");
+                //tsmiCollectImageMode.Image = null;
+            }
+            else if (sender.Equals(tsmiCollectImageMode))
+            {
+
+                RunMode = TestMode.Collect_Image_Mode;
+                tsmiRun.Text = GetText("tsmiCollectImageMode.Text");
+
+            }
+            else if (sender.Equals(tsmiCollectImagepoint))
+            {
+                RunMode = TestMode.Collect_Image_Point;
+                tsmiRun.Text = GetText("tsmiCollectImagepoint.Text"); 
+            }
+        }
+        #region ROI設置
+        private void cbDevice_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (cap1 == cbDevice.SelectedItem) return;
+            if (cap1 != null && cap1.IsOpen)
+            {
+                cap1.Stop();
+                cap1.CamImageReady -= Cap_CamImageReady;
+                Thread.Sleep(500);
+
+            }
+            cap1 = cbDevice.SelectedItem as BaslerVideoCapture;
+            if (cap1 != null)
+            {
+                cap1.CamImageReady += Cap_CamImageReady;
+                //int index = cbDevice.SelectedIndex;
+                //cap1.Open(cameraResolution[index].Width, cameraResolution[index].Height);
+                ReflashSettingUI();
+                cap1.ContinuousShot();
+            }
+        }
+
+        public void ReflashSettingUI()
+        {
+            if (cap1 != null)
+            {
+                tbX.Maximum = cap1.width;
+                tbY.Maximum = cap1.height;
+                tbHeight.Maximum = cap1.height;
+                tbWidth.Maximum = cap1.width;
+                if (ROIS != null)
+                {
+                    dataGridView1.DataSource = ROIS.Where(i => i.serial == cap1.serial).ToList();
+                }
+            }
+        }
+        private void btnAddROI_Click(object sender, EventArgs e)
+        {
+            tbX.Value = 100;
+            tbY.Value = 100;
+
+            tbHeight.Value = 100;
+            tbWidth.Value = 100;
+            displayROI = true;
+            dataGridView1.ClearSelection();
+            if ((BaslerVideoCapture)cbDevice.SelectedItem != null)
+            {
+                selectedROI = new CaptureROI()
+                {
+                    serial = ((BaslerVideoCapture)cbDevice.SelectedItem).serial,
+                    index = int.Parse(TBIndex.Text),
+                    //index = ((BaslerVideoCapture)cbDevice.SelectedItem).index,
+                    x = tbX.Value,
+                    y = tbY.Value,
+                    width = tbWidth.Value,
+                    height = tbHeight.Value,
+                    mask = false,
+                };
+                ROIS.Add(selectedROI);
+                UpdateDataGridViewForROI();
+            }
+        }
+
+        private void btnDeleteROI_Click(object sender, EventArgs e)
+        {
+            displayROI = false;
+            if (dataGridView1.SelectedRows != null && dataGridView1.SelectedRows.Count > 0)
+            {
+                DataGridViewRow r = dataGridView1.SelectedRows[0];
+                int index = (int)r.Cells["index"].Value;
+                int x = (int)r.Cells["x"].Value;
+                int y = (int)r.Cells["y"].Value;
+                int width = (int)r.Cells["width"].Value;
+                int height = (int)r.Cells["height"].Value;
+                ROIS.Remove(selectedROI);
+                dataGridView1.ClearSelection();
+                UpdateDataGridViewForROI();
+
+                //selectedROI = null;
+            }
+        }
+        private void ROI_Scroll(object sender, EventArgs e)
+        {
+            //ScrollBar sb = sender as ScrollBar;
+            selectedROI.x = tbX.Value;
+            selectedROI.y = tbY.Value;
+            selectedROI.width = tbWidth.Value;
+            selectedROI.height = tbHeight.Value;
+            UpdateDataGridViewForROI();
+
+        }
+        private void UpdateDataGridViewForROI()
+        {
+            dataGridView1.DataSource = ROIS.Where(x => x.serial == cap1.serial);
+            dataGridView1.Refresh();
+        }
+
+        private void btnSaveROI_Click(object sender, EventArgs e)
+        {
+            string modelName = Product_Name;
+            pegatron.basic.NormalBox.InputBox(GetText("Save"), GetText("InputProductionName"), ref modelName);
+
+
+            string full_Path = config.Image.Models_Path;
+            if (!Directory.Exists(full_Path)) Directory.CreateDirectory(full_Path);
+            full_Path = Path.Combine(full_Path, $"{modelName}.XML");
+            if (File.Exists(full_Path)) File.Delete(full_Path);
+            if (!string.IsNullOrEmpty(modelName))
+            {
+                ProductOutward p = new ProductOutward()
+                {
+                    Name = modelName,
+                    ROIs = ROIS,
+                };
+                p.Save(full_Path);
+            }
+            System.Configuration.Configuration config1 = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+            if (config1.AppSettings.Settings.AllKeys.Contains("CurrentModel"))
+            {
+                config1.AppSettings.Settings[$"CurrentModel"].Value = full_Path;
+            }
+            else
+            {
+                config1.AppSettings.Settings.Add($"CurrentModel", full_Path);
+            }
+
+            config1.Save(ConfigurationSaveMode.Modified);
+            ConfigurationManager.RefreshSection("appSettings");
+        }
+
+        private void btnDenominator_Click(object sender, EventArgs e)
+        {
+            string denominator = "1";
+            int divider = 1;
+            NormalBox.InputBox(GetText("ScreenShotDivide"), GetText("DivideNumbers"), ref denominator);
+
+            if (!string.IsNullOrEmpty(denominator) && int.TryParse(denominator, out divider))
+            {
+                if (sender == btnWidthBeDivide)
+                {
+                    double scalar = (double)selectedROI.width / (double)divider;
+                    for (int i = 1; i <= divider; i++)
+                    {
+                        Rectangle rec;
+                        int x = selectedROI.x + (int)((i - 1) * scalar);
+                        int y = selectedROI.y;
+                        int delta_Width = 0;
+                        if (i < divider) delta_Width = (int)(i * scalar) + selectedROI.x - x;
+                        else delta_Width = selectedROI.width + selectedROI.x - x;
+                        int height = selectedROI.height;
+                        //rec = new Rectangle(x, y, delta_Width, height);
+                        CaptureROI r = new ImageCapture.CaptureROI()
+                        {
+                            serial = selectedROI.serial,
+                            index = int.Parse(TBIndex.Text),
+                            //index = selectedROI.index,
+                            x = x,
+                            y = y,
+                            width = delta_Width,
+                            height = height,
+                        };
+                        ROIS.Add(r);
+                    }
+                }
+                else
+                {
+                    double scalar = (double)selectedROI.height / (double)divider;
+                    for (int i = 1; i <= divider; i++)
+                    {
+                        int x = selectedROI.x;
+                        int y = selectedROI.y + (int)((i - 1) * scalar);
+                        int delta_height = 0;
+                        if (i < divider) delta_height = (int)(i * scalar) + selectedROI.y - y;
+                        else delta_height = selectedROI.height + selectedROI.y - y;
+                        int width = selectedROI.width;
+                        //rec = new Rectangle(x, y, delta_Width, height);
+                        CaptureROI r = new ImageCapture.CaptureROI()
+                        {
+                            serial = selectedROI.serial,
+                            index = int.Parse(TBIndex.Text),
+                            //index = selectedROI.index,
+                            x = x,
+                            y = y,
+                            width = width,
+                            height = delta_height,
+                            mask = false,
+                        };
+                        ROIS.Add(r);
+                    }
+                }
+
+                ROIS.Remove(selectedROI);
+                selectedROI = null;
+                UpdateDataGridViewForROI();
+            }
+        }
+
+        private void dataGridView1_DataBindingComplete(object sender, DataGridViewBindingCompleteEventArgs e)
+        {
+            if (selectedROI != null)
+            {
+                foreach (DataGridViewRow r in dataGridView1.Rows)
+                {
+                    if ((int)r.Cells["x"].Value == selectedROI.x && (int)r.Cells["y"].Value == selectedROI.y && (int)r.Cells["width"].Value == selectedROI.width && (int)r.Cells["height"].Value == selectedROI.height)
+                    {
+                        r.Selected = true;
+                    }
+                }
+            }
+            else dataGridView1.ClearSelection();
+        }
+
+        private void dataGridView1_CellClick(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.ColumnIndex >= 0 && e.RowIndex >= 0)
+            {
+                displayROI = false;
+                if (dataGridView1.SelectedRows != null && dataGridView1.SelectedRows.Count > 0)
+                {
+                    DataGridViewRow r = dataGridView1.SelectedRows[0];
+                    int serial = (int)r.Cells["serial"].Value;
+                    int index = (int)r.Cells["index"].Value;
+                    int x = (int)r.Cells["x"].Value;
+                    int y = (int)r.Cells["y"].Value;
+                    int width = (int)r.Cells["width"].Value;
+                    int height = (int)r.Cells["height"].Value;
+                    bool mask = (bool)r.Cells["mask"].Value;
+                    string category = (string)r.Cells["category"].Value;
+                    selectedROI = ROIS.Where(i => i.serial == serial && i.index == index && i.x == x && i.y == y && i.width == width && i.height == height).FirstOrDefault();
+                    tbX.Value = selectedROI.x;
+                    tbY.Value = selectedROI.y;
+                    tbWidth.Value = selectedROI.width;
+                    tbHeight.Value = selectedROI.height;
+                    selectedROI.mask = mask;
+                    selectedROI.category = category;
+                    displayROI = true;
+                }
+            }
+        }
+
+        private void dataGridView1_RowHeaderMouseClick(object sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.RowIndex >= 0)
+            {
+                displayROI = false;
+                DataGridViewRow r = dataGridView1.Rows[e.RowIndex];
+                r.Selected = true;
+                int serial = (int)r.Cells["serial"].Value;
+                int index = (int)r.Cells["index"].Value;
+                int x = (int)r.Cells["x"].Value;
+                int y = (int)r.Cells["y"].Value;
+                int width = (int)r.Cells["width"].Value;
+                int height = (int)r.Cells["height"].Value;
+                selectedROI = ROIS.Where(i => i.serial == serial/*index == index*/ && i.x == x && i.y == y && i.width == width && i.height == height).FirstOrDefault();
+                tbX.Value = selectedROI.x;
+                tbY.Value = selectedROI.y;
+                tbWidth.Value = selectedROI.width;
+                tbHeight.Value = selectedROI.height;
+                displayROI = true;
+            }
+        }
+        #endregion
+        private void btnDebug_Click(object sender, EventArgs e)
+        {
+            //btnTest.Enabled = false;
+            current_step = Test_Step.wait_dut_in;
+            timer.Elapsed += Timer_Elapsed;
+            timer.Enabled = true;
+            timer.AutoReset = false;
+            //btnTest.Text = "Running";
+        }
+        private void tbPSelectModel_Selecting(object sender, TabControlCancelEventArgs e)
+        {
+            if (timer.Enabled && e.TabPage == tpSetting) e.Cancel = true;
+        }
+        private void tsbLoad_Click(object sender, EventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog();
+            openFileDialog.Filter = "XML file|*.XML";
+            openFileDialog.Multiselect = false;
+            if (openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                LoadParameters(openFileDialog.FileName);
+                if (tbPSelectModel.SelectedTab == tpSetting)
+                {
+                    ReflashSettingUI();
+                }
+                tslProduct_Name.Text = Product_Name;
+            }
+        }
+        #region IO控件
+        private void CheckInputIOStatus(object sender, EventArgs e)
+        {
+            if (NmodbusHelper.ReadSinglCoilByAddressName("M2500", 1))
+            {
+                lbLowerVisualPosition.BackColor = Color.Green;
+
+            }
+            else
+            {
+                lbLowerVisualPosition.BackColor = Color.Gray;
+            }
+            if (NmodbusHelper.ReadSinglCoilByAddressName("M2501", 1))
+            {
+                lbDetectionLocation.BackColor = Color.Green;
+            }
+            else
+            {
+                lbDetectionLocation.BackColor = Color.Gray;
+            }
+            if (NmodbusHelper.ReadSinglCoilByAddressName("M2503", 1))
+            {
+                LBlian.BackColor = Color.Green;
+            }
+            else
+            {
+                LBlian.BackColor = Color.Gray;
+            }
+            if (NmodbusHelper.ReadSinglCoilByAddressName("M2502", 1))
+            {
+                LBxuan.BackColor = Color.Green;
+            }
+            else
+            {
+                LBxuan.BackColor = Color.Gray;
+
+            }
+
+        }
+        public bool BarcodeShot { get; private set; } = false;
+        private void IOButton_Click(object sender, EventArgs e)
+        {
+            switch (((Button)sender).Name)
+            {
+                case "btn3ColorGreen":
+                    if (colorlight.greenLight.State)
+                    {
+                        colorlight.greenLight.WriteState(false);
+                        ((Button)sender).Text = GetText("btn3ColorGreen.Text");
+                    }
+                    else
+                    {
+                        colorlight.greenLight.WriteState(true);
+                        ((Button)sender).Text = GetText("GreenLightOFF");
+                    }
+
+                    break;
+                case "btn3ColorYellow":
+                    if (colorlight.yellowLight.State)
+                    {
+                        colorlight.yellowLight.WriteState(false);
+                        ((Button)sender).Text = GetText("btn3ColorYellow.Text");
+                    }
+                    else
+                    {
+                        colorlight.yellowLight.WriteState(true);
+                        ((Button)sender).Text = GetText("YellowLightOFF");
+                    }
+                    break;
+                case "btn3ColorRed":
+                    if (colorlight.redLight.State)
+                    {
+                        colorlight.redLight.WriteState(false);
+                        ((Button)sender).Text = GetText("btn3ColorRed.Text");
+                    }
+                    else
+                    {
+                        colorlight.redLight.WriteState(true);
+                        ((Button)sender).Text = GetText("RedLightOFF");
+                    }
+                    break;
+                case "btn3ColorAlarm":
+                    if (colorlight.buzzer.State)
+                    {
+                        colorlight.buzzer.WriteState(false);
+                        ((Button)sender).Text = GetText("btn3ColorAlarm.Text");
+                    }
+                    else
+                    {
+                        colorlight.buzzer.WriteState(true);
+                        ((Button)sender).Text = GetText("BuzzeOFF");
+                    }
+                    break;
+                case "btnLowerVisualLight":
+                    if (((Button)sender).Text == GetText("btnLowerVisualLight.Text"))
+                    {
+                        colorlight.DownLightOpen();
+                        ((Button)sender).Text = GetText("LowerVisualLightOFF");
+                    }
+                    else
+                    {
+                        colorlight.DownLightFalse();
+                        ((Button)sender).Text = GetText("btnLowerVisualLight.Text");
+                    }
+                    break;
+                case "btnVisualLight":
+                    if (((Button)sender).Text == GetText("btnVisualLight.Text"))
+                    {
+                        colorlight.LightOPen();
+                        ((Button)sender).Text = GetText("VisualLightOFF");
+                    }
+                    else
+                    {
+                        colorlight.LightFalse();
+                        ((Button)sender).Text = GetText("btnVisualLight.Text");
+                    }
+                    break;
+                case "BtnAOIReady":
+                    if (aoi_ready.State)
+                    {
+                        aoi_ready.WriteState(false);
+                        ((Button)sender).Text = GetText("BtnAOIReady.Text");
+                    }
+                    else
+                    {
+                        aoi_ready.WriteState(true);
+                        ((Button)sender).Text = GetText("AOIReadyOFF");
+                    }
+                    break;
+                case "btnLowerVisualCompleted":
+
+                    ((Button)sender).Text = GetText("LowerVisualCompletedOFF");
+                    ((Button)sender).Enabled = false;
+                    Thread.Sleep(1000);
+                    ((Button)sender).Text = GetText("btnLowerVisualCompleted.Text");
+                    ((Button)sender).Enabled = true;
+                    break;
+                case "btnVisualCompletion":
+                    test_finish.WriteState(true);
+                    ((Button)sender).Text = GetText("AOIInspectionCompletionOFF");
+                    ((Button)sender).Enabled = false;
+                    Thread.Sleep(1000);
+                    test_finish.WriteState(false);
+                    ((Button)sender).Text = GetText("btnVisualCompletion.Text");
+                    ((Button)sender).Enabled = true;
+                    break;
+                case "btnPASS":
+                    NmodbusHelper.WriteSinglCoilByAddress("M2003", true);
+                    ((Button)sender).Enabled = false;
+                    Thread.Sleep(1000);
+                    NmodbusHelper.WriteSinglCoilByAddress("M2003", false);
+                    ((Button)sender).Enabled = true;
+                    break;
+                case "btnxiaPASS":
+                    NmodbusHelper.WriteSinglCoilByAddress("M2000", true);
+                    ((Button)sender).Enabled = false;
+                    Thread.Sleep(1000);
+                    NmodbusHelper.WriteSinglCoilByAddress("M2000", false);
+                    ((Button)sender).Enabled = true;
+                    break;
+                case "btnNG":
+                    NmodbusHelper.WriteSinglCoilByAddress("M2002", true);
+                    ((Button)sender).Enabled = false;
+                    Thread.Sleep(1000);
+                    NmodbusHelper.WriteSinglCoilByAddress("M2002", false);
+                    ((Button)sender).Enabled = true;
+                    break;
+                case "btnRobotPass":
+                    NmodbusHelper.WriteSinglCoilByAddress("M2001", true);
+                    ((Button)sender).Enabled = false;
+                    Thread.Sleep(1000);
+                    NmodbusHelper.WriteSinglCoilByAddress("M2001", false);
+                    ((Button)sender).Enabled = true;
+                    break;
+                case "btnCameraScreenshot":
+                    BarcodeShot = true;
+                    CameraScreenshot();
+                    string smallImage = Path.Combine(config.Image.BarcodeImage);
+                    smallImage = Path.Combine(smallImage, DateTime.Now.ToString("yyyyMMdd"));
+                    string t = Path.Combine(smallImage, $"{timera}_{config.ReadBarcode.BarcodeCameraSN}_{config.ReadBarcode.Index}_{config.ReadBarcode.ImageBarcodePoint}.jpg");
+                    Image<Bgr, byte> image = new Image<Bgr, byte>(t);
+                    imageBox91.Image = image;
+                    break;
+                case "btnReadBracode":
+                    CameraBarcode = true;
+                    ReadBarcodeStatr();
+                    break;
+
+            }
+        }
+        #endregion
+        public void CameraScreenshot()
+        {
+            MessageBox.Show(GetText("IsDUTInTray"), "ScreenShot", MessageBoxButtons.OKCancel);
+            if (config.ReadBarcode.CameraBarcode && RtnCamera.Checked && UPcamera1)
+            {
+                cap1 = cap[0];
+                cap1.index = 12;
+                if (CameraCap(cap1))
+                {
+
+                }
+            }
+            else
+            {
+                MessageBox.Show(GetText("IsEnableCameraSetting"), "ScreenShot", MessageBoxButtons.OKCancel);
+
+            }
+
+        }
+        #region SFIS
+        public string msg { get; set; }
+        public delegate void stringhandler(string msg);
+        public event stringhandler OnMessageCreate;
+        public bool SFISresult { get; private set; } = true;
+        public bool SFISPACKINGresult { get; private set; } = true;
+        public int Login_Init()
+        {
+            bool login = SFIS.Login();
+            if (login)
+            {
+                msg = GetText("LoginSuccess")+"\r\n";
+                log.write("SFIS登入成功");
+                OnMessageCreate?.Invoke(msg);
+                return 1;
+            }
+            else
+            {
+                msg = GetText("LoginFail") + "\r\n";
+                log.write("SFIS登入失敗");
+                OnMessageCreate?.Invoke(msg);
+                return 4;
+            }
+        }
+        public bool Decode_Function(string barcode, string REASON, string DUTY)
+        {
+            bool passStation;
+            if (!SFIS.IsLogin) SFIS.Login();
+            passStation = SFIS.WTSP_REPAIR(barcode, REASON, DUTY);
+            if (passStation)
+            {
+                msg = "[" + barcode + "] AOI Re-SFIS OK！！！ [" + SFIS.LastMessage + "]\r\n";
+                SFISresult = true;
+                log.write(msg);
+                OnMessageCreate?.Invoke(msg);
+                msg = ReadBarcodeIsn + "----->"+GetText("ReuploadSFIS");
+                log.write(msg);
+                return true;
+            }
+            else
+            {
+                msg = "[" + barcode + "]AOI Re-SFIS NG！！！[" + SFIS.LastMessage + "]\r\n";
+
+                SFISmsg = GetText("AOIReSFISNG");
+                SFISresult = false;
+                log.write(msg);
+                OnMessageCreate?.Invoke(msg);
+                return false;
+            }
+
+        }
+        public bool PASS_Function(string barcode,string errorcode)
+        {
+            string text = "LABEL";
+            bool passStation;
+            if (!SFIS.IsLogin) SFIS.Login();
+            errorcode = (errorcode.Equals("PASS") ? "" : errorcode);
+            passStation = SFIS.WTSP_RESULT(barcode, errorcode, "Item,Value,UCL,LCL\n");
+            if (passStation)
+            {
+                msg = "[" + barcode + "] SFISWeb Upload Success！！！ [" + SFIS.LastMessage + "]\r\n";
+
+                SFISmsg = GetText("AOIUploadSuccess");
+
+                SFISresult = true;
+                log.write(msg);
+                OnMessageCreate?.Invoke(msg);
+                return true;
+            }
+            else
+            {
+                text = SFIS.LastMessage;
+                //msg = "[" + barcode + "] SFIS网站上传失败！！！[" + SFIS.LastMessage + "]\r\n";
+                if (SFIS.LastMessage.Contains("BACK:PACKING"))
+                {
+                    msg = "[" + barcode + "] SFIS has passed!!!Please goto next station！！！[" + SFIS.LastMessage + "]\r\n";
+
+                    SFISmsg = GetText("AOIPassed");
+
+                }
+                //else if (SFIS.LastMessage.Contains("BACK:ACT2"))
+                //{
+                //    msg = "[" + barcode + "] 非本站點機臺,請檢查站點[" + SFIS.LastMessage + "]\r\n";
+                //    SFISmsg = "非本站點機臺,請檢查站點";
+                //}
+                else if (SFIS.LastMessage.Contains("REPAIR OF AP01"))
+                {
+                    msg = "[" + barcode + "] Locked,please decode on SFIS[" + SFIS.LastMessage + "]\r\n";
+                    //解碼功能
+                    if (config.ReadBarcode.DecodeOpen == true)
+                    {
+                       if(Decode_Function(barcode, config.SFIS.REASON, config.SFIS.DUTY))
+                       {                           
+                          PASS_Function(barcode, errorcode);
+                       }
+                    }
+                }
+                else
+                {
+                    msg = "[" + barcode + "]SFISWeb Upload Fail！！！[" + SFIS.LastMessage + "]\r\n";
+
+                    SFISmsg = GetText("AOIUploadFail");
+                    SFISresult = false;
+                }
+
+                log.write(msg);
+                OnMessageCreate?.Invoke(msg);
+                return false;
+            }
+        }
+        public bool NG_Function(string barcode, string errorcode)
+        {
+            bool passStation;
+            if (!SFIS.IsLogin) SFIS.Login();
+            passStation = SFIS.WTSP_RESULT(barcode, errorcode, "Item,Value,UCL,LCL\n");
+            if (passStation)
+            {
+                msg = "[" + barcode + "] Fail,Decoded OK [" + SFIS.LastMessage + "]\r\n";
+                log.write(msg);
+                OnMessageCreate?.Invoke(msg);
+                return true;
+            }
+            else
+            {
+                msg = "[" + barcode + "] SFIS Upload Fail！！！[" + SFIS.LastMessage + "]\r\n";
+                log.write(msg);
+                OnMessageCreate?.Invoke(msg);
+                return false;
+            }
+        }
+        public int CountPass { get; private set; }
+        public int CounFail { get; private set; }
+        #endregion
+        delegate void updateYieldHandler();
+        private void ISNBarcode()
+        {
+            LBSN.Text = ReadBarcodeIsn;
+        }
+        private void updateYield()
+        {
+            LBCountPass.Text = CountPass.ToString();
+            LBCountFail.Text = CounFail.ToString();
+            LBCoutInput.Text = (CountPass + CounFail).ToString();
+            if (CountPass > 0)
+            {
+                LBProductYield.Text = ((double)CountPass / (CountPass + CounFail)).ToString("P2").Replace("%", String.Empty);
+            }
+        }
+        #region ReadBarcode
+        /// <summary>
+        /// 重新命名图片增加条码后缀
+        /// </summary>
+        private bool NewBarcodeImage1()
+        {
+            if (ReadBarcodeIsn == null)
+            {
+                return false;
+            }
+            else
+            {
+                string FolderPath = config.Image.ImageStaging;//推论完的图片地址
+                FolderPath = Path.Combine(FolderPath, Product_Name, DateTime.Now.ToString("yyyyMMdd"));
+                if (!Directory.Exists(FolderPath))
+                    Directory.CreateDirectory(FolderPath);
+                string newimagePath = config.Image.Image_Path_ReadBarcodeImage;//重新命名后图片储存地址
+                newimagePath = Path.Combine(newimagePath, Product_Name, DateTime.Now.ToString("yyyyMMdd"), ReadBarcodeIsn);
+                if (!Directory.Exists(newimagePath))
+                    try
+                    {
+                        Directory.CreateDirectory(newimagePath);
+                    }
+                    catch (Exception ex )
+                    {
+                        MessageBox.Show(ex.Message + newimagePath);                       
+                    }                  
+                DirectoryInfo directory = new DirectoryInfo(FolderPath);
+                FileInfo[] files = directory.GetFiles("*.png");
+                foreach (FileInfo file in files)
+                {
+                    string newFileName = Path.GetFileNameWithoutExtension(file.FullName) + "_" + ReadBarcodeIsn + ".png";
+                    string newFilePath = Path.Combine(newimagePath, newFileName);
+                    file.MoveTo(newFilePath);
+
+                    try
+                    {
+                        string bigImagePath = config.Image.BigImage;
+                        if (!Directory.Exists(bigImagePath))
+                        {
+                            Directory.CreateDirectory(bigImagePath);
+                        }
+
+                        using(Bitmap bmp = new Bitmap(newFilePath))
+                        {
+                            string bigFileName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{ReadBarcodeIsn}.jpg";
+                            string bigFileFullPath = Path.Combine(bigImagePath, bigFileName);
+
+                            bmp.Save(bigFileFullPath, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        }
+                    }
+                    catch(Exception ex)
+                    {
+                        MessageBox.Show("Error Save Big Image: " + ex.Message);
+                    }
+                }
+                return true;
+            }
+        }
+        private bool NewBarcodeImage()
+        {
+            if (ReadBarcodeIsn == null)
+            {
+                return false;
+            }
+            else
+            {
+                string FolderPath = config.Image.ImageStaging;//推论完的图片地址
+                FolderPath = Path.Combine(FolderPath, Product_Name, DateTime.Now.ToString("yyyyMMdd"));
+                if (!Directory.Exists(FolderPath))
+                    Directory.CreateDirectory(FolderPath);
+                string newimagePath = config.Image.Image_Path_ReadBarcodeImage;//重新命名后图片储存地址
+                newimagePath = Path.Combine(newimagePath, Product_Name, DateTime.Now.ToString("yyyyMMdd"), ReadBarcodeIsn);
+                if (!Directory.Exists(newimagePath))
+                    try
+                    {
+                        Directory.CreateDirectory(newimagePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(ex.Message + newimagePath);
+                    }
+                DirectoryInfo directory = new DirectoryInfo(FolderPath);
+                FileInfo[] files = directory.GetFiles("*.png");
+                foreach (FileInfo file in files)
+                {
+                    string newFileName = Path.GetFileNameWithoutExtension(file.FullName) + "_" + ReadBarcodeIsn + ".png";
+                    string newFilePath = Path.Combine(newimagePath, newFileName);
+                    file.MoveTo(newFilePath);
+                }
+                return true;
+            }
+
+        }
+
+        public void ReadBarcodeStatr()
+        {
+            if (RtnCamera.Checked == true)
+            {
+                CameraReadBarcode();
+            }
+            else if (RtnScanningGun.Checked == true)
+            {
+                // Invoke(new updateYieldHandler(SN));
+            }
+        }
+        public void CameraReadBarcode()
+        {
+            int Q = config.ReadBarcode.BarcodeLength;
+            string position = config.ReadBarcode.ImageBarcodePoint;
+            string timer = timera;
+            string ImageBarcode = "";
+            string ImageTimerpp = "";
+            ImageTimerpp = ImageProcess.timer;
+            cap1.serial = config.ReadBarcode.BarcodeCameraSN;
+            string smallImage = Path.Combine(config.Image.Collection_Image_Path, $"{cap1.serial}"/*, "small"*/);
+            smallImage = Path.Combine(smallImage, DateTime.Now.ToString("yyyyMMdd"));
+            string predict_temporary_path = Path.Combine(config.Image.BarcodeImage, DateTime.Now.ToString("yyyyMMdd")/*, $"{selectedCapture.serial}_{index}"*/);
+            string ImageP = Path.Combine(smallImage, $"{cap1.serial}_{ImageTimerpp}_{position}.jpg");
+            string image = Path.Combine(predict_temporary_path, $"{timer}_{cap1.serial}_{config.ReadBarcode.Index}_{position}.jpg");
+            string isn = null;
+            BarcodeReader reader = new BarcodeReader();
+            using (Bitmap bmp = new Bitmap(image))
+            {
+                Result result = reader.Decode(bmp);
+                if (result != null)
+                {
+                    isn = result.Text.Substring(/*config.ReadBarcode.SNStartBit*/result.Text.IndexOf("PVN"),11 /*Q*/);
+                    ReadBarcodeIsn = isn;
+                    log.write($"{isn} 條碼識別成功.");
+                    // SNtextBox.Text = isn;
+                    Test_Barcode = true;
+                }
+                else
+                {
+                    log.write("條碼識別失敗,上传给python进行解压条码");
+                    TcpRobot1($"{image}");
+                    if (strq.Contains("PVN"))
+                    {
+                        strq = strq.Substring(/*config.ReadBarcode.SNStartBit*/strq.IndexOf("PVN"), 11);
+                        log.write("识别条码成功:" + strq);
+                        ReadBarcodeIsn = strq;
+                    //}
+                    else
+                    {
+                        TcpRobot1($"{image}");
+                        if (strq.Contains("PVN"))
+                        {
+                            strq = strq.Substring(/*config.ReadBarcode.SNStartBit*/strq.IndexOf("PVN"), 11);
+                            log.write("识别条码成功:" + strq);
+                            ReadBarcodeIsn = strq;
+                        }
+                        else
+                        {
+                            ReadBarcodeIsn = null;
+                        }
+
+                    }
+                    //SNtextBox.Text = strq;
+                }
+            }
+        }
+        #endregion
+        #region 语言部分
+        //记录上一次储存的语言
+        //public void LanguageChange()
+        //{
+        //    string language = Properties.Settings.Default.DefaultLanguage;
+        //    LanguageDe(language);
+
+        //    Language.SetDefaultLanguage(language);
+
+        //    Language.LoadLanguage(this, typeof(EdgeToolForm));
+
+        //    switch (language.ToLower())
+        //    {
+        //        case "zh-Hans": this.CurrentSelectedLanguage = Languages.ChineseSimplified; break;
+        //        case "en-us": this.CurrentSelectedLanguage = Languages.English; break;
+        //        case "vi": this.CurrentSelectedLanguage = Languages.vietnamese; break;
+        //        case "ib": this.CurrentSelectedLanguage = Languages.ChineseSimplified; break;
+        //        default:
+        //            break;
+        //    }
+        //}
+        //private void LanguageDe(string languagede)
+        //{
+        //    if (languagede == "zh-Hans")
+        //    {
+        //        cblanguage.Text = "中文";
+        //    }
+        //    else if (languagede == "en")
+        //    {
+        //        cblanguage.Text = "English";
+        //    }
+        //    else if (languagede == "vi")
+        //    {
+        //        cblanguage.Text = "Tiếng Việt";
+        //    }
+        //    else if (languagede == "id")
+        //    {
+        //        cblanguage.Text = "Orang Indonesia";
+        //    }
+        //}
+        //private void cblanguage_SelectedIndexChanged(object sender, EventArgs e)
+        //{
+        //    var oldstate = this.WindowState;
+
+        //    if (cblanguage.Text == "中文")
+        //    {
+        //        //修改默认语言
+        //        Language.SetDefaultLanguage("zh-Hans");
+        //        tsmiCollectImageMode.Text = "收集圖片模式(Collect image mode)";
+        //        tsmiNormalTest.Text = "測試模式(Test mode)";
+        //        tsmiRun.Text = "運行模式(Run)";
+        //        tsmiStartButton.Text = "開始(Start)";
+        //        //对所有打开的窗口重新加载语言
+        //        foreach (Form form in Application.OpenForms)
+        //        {
+        //            LoadAll(form);
+        //        }
+        //    }
+        //    else if (cblanguage.Text == "English")
+        //    {
+        //        //修改默认语言
+        //        Language.SetDefaultLanguage("en");
+        //        tsmiCollectImageMode.Text = "Collect image mode";
+        //        tsmiNormalTest.Text = "Test Mode";
+        //        tsmiRun.Text = "Run mode";
+        //        tsmiStartButton.Text = "Start";
+
+        //        //对所有打开的窗口重新加载语言
+        //        foreach (Form form in Application.OpenForms)
+        //        {
+        //            LoadAll(form);
+        //        }
+        //    }
+        //    else if (cblanguage.Text == "Tiếng Việt")
+        //    {
+        //        //修改默认语言
+        //        Language.SetDefaultLanguage("vi");
+        //        tsmiCollectImageMode.Text = "Thu thập các mẫu hình ảnh(Collect image mode)";
+        //        tsmiNormalTest.Text = "Chế độ kiểm tra(Test mode)";
+        //        tsmiRun.Text = "Chế độ chạy(Run)";
+        //        tsmiStartButton.Text = "Bắt đầu đi(Start)";
+        //        //对所有打开的窗口重新加载语言
+        //        foreach (Form form in Application.OpenForms)
+        //        {
+        //            LoadAll(form);
+        //        }
+        //    }
+        //    else if (cblanguage.Text == "Orang Indonesia")
+        //    {
+        //        Language.SetDefaultLanguage("id");
+        //        tsmiCollectImageMode.Text = "Mode pengumpulan gambar(Collect image mode)";
+        //        tsmiNormalTest.Text = "Mode uji(Test mode)";
+        //        tsmiRun.Text = "Mode operasi(Run)";
+        //        tsmiStartButton.Text = "Mulai(Start)";
+        //        //对所有打开的窗口重新加载语言
+        //        foreach (Form form in Application.OpenForms)
+        //        {
+        //            LoadAll(form);
+        //        }
+        //    }
+
+        //    this.WindowState = oldstate == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+        //    Thread.Sleep(50);
+        //    this.WindowState = oldstate;
+        //}
+        //private void LoadAll(Form form)
+        //{
+        //    if (form.Name == "EdgeToolForm")
+        //    {
+        //        Language.LoadLanguage((Form)form, typeof(EdgeToolForm));
+        //    }
+
+        //}
+        #endregion
+        #region 手臂部分
+        double offsetMoveDistance = 0.1;
+        int offsetMoveSpeed = 10;
+
+        int positionMoveSpeed = 10;
+        int positionMoveSafeZ = 0;
+        public enum RobotPositionIndex
+        {
+            Home = 0,
+            CSafe = 41,
+            HSafe = 42,
+            SSafe = 43,
+            SVison01 = 01, SVison02 = 02, SVison03 = 03, SVison04 = 04, SVison05 = 05, SVison06 = 06,
+            CVison21 = 21, CVison22 = 22, CVison23 = 23, CVison24 = 24, CVison25 = 25, CVison26 = 26,
+            HVison31 = 11, HVison32 = 12, HVison33 = 13, HVison34 = 14
+
+        }
+        public void RobotInit()
+        {
+            robot.Open(config.Robot.Address, config.Robot.ControlPort, config.Robot.CommandPort, config.Robot.DataPort);
+            robot.Fcn00_MotorServo(Robot.MotorState.ON);
+            robot.Fcn08_LoadPoint(config.Robot.Production);
+            Position homePoint = new Position();
+            robot.Fcn05_ReadPointPosition((int)RobotPositionIndex.Home, out homePoint);
+            robot.Fcn04_ReadCurrentPosition();
+            robot.Fcn25_OffsetMove(0, 0, homePoint.Z - robot.position.Z, 0, 0, 0);
+            Thread.Sleep(100);
+            robot.Fcn20_MoveToPoint(10, Robot.MoveMode.GO, (int)RobotPositionIndex.Home, 0);
+
+        }
+        public void RobotClose()
+        {
+            if (robot == null) return;
+            //robot.Close();
+        }
+
+
+        /// <summary>
+        /// 点位变更时更新显示
+        /// </summary>
+        private void Robot_PositionUpdateEvent(Position position)
+        {
+            ShowPositionToGroupbox(GrpCurrentPosition, position);
+        }
+        /// <summary>
+        /// 返回安全点
+        /// </summary>
+        /// <returns></returns>
+        public bool RobotSafeGoHome()
+        {
+            var Homeposition = new Position();
+            robot.Fcn05_ReadPointPosition((int)RobotPositionIndex.Home, out Homeposition);
+            robot.Fcn04_ReadCurrentPosition();
+            double safeZ = Homeposition.Z - robot.position.Z;
+            try
+            {
+                robot.Fcn25_OffsetMove(0, 0, safeZ, 0, 0, 0);//.CheckResult("当前点位上升到安全高度");
+                robot.Fcn20_MoveToPoint(30, Robot.MoveMode.GO, (int)RobotPositionIndex.Home, 0);//.CheckResult("Go方式移动到Home点");
+                return true;
+            }
+            catch (Exception ex)
+            {
+
+                return false;
+            }
+        }
+        /// <summary>
+        /// 运动到点位
+        /// </summary>
+        /// <param name="speed">速度</param>
+        /// <param name="move">运动模式</param>
+        /// <param name="index">点位</param>
+        /// <param name="zDistance">安全高度</param>
+        /// <returns></returns>
+        public bool MovePoint(int speed, Epson.V1.Robot.MoveMode move, RobotPositionIndex index, double zDistance)
+        {
+            return robot.Fcn20_MoveToPoint(speed, move, (int)index, zDistance);
+        }
+        /// <summary>
+        /// 保存当前点位
+        /// </summary>
+        /// <param name="pointindex">点位</param>
+        /// <param name="filename">文件名称</param>
+        /// <returns></returns>
+        public bool SaveCurrentPositon(int pointindex, string filename)
+        {
+            return robot.Fcn06_SavePointHere(pointindex, filename);
+        }
+        /// <summary>
+        /// 读取当前点位
+        /// </summary>
+        /// <param name="pointindex"></param>
+        /// <param name="position"></param>
+        /// <returns></returns>
+        public bool ReadPosition(int pointindex, out Position position)
+        {
+            return robot.Fcn05_ReadPointPosition(pointindex, out position);
+        }
+
+        /// <summary>
+        /// 移动到栈板
+        /// </summary>
+        /// <param name="speed">速度</param>
+        /// <param name="move">运动方式</param>
+        /// <param name="index">栈板的第几个</param>
+        /// <param name="zDistance">安全高度</param>
+        /// <returns></returns>
+        public bool GoPalletIndex(int speed, Robot.MoveMode move, int index, double zDistance)
+        {
+            return robot.Fcn23_MoveToPallet(speed, move, 2, index, zDistance);
+        }
+        public bool GoPalletIndex2(int speed, Robot.MoveMode move, int index, double zDistance)
+        {
+            return robot.Fcn23_MoveToPallet(speed, move, 3, index, zDistance);
+        }
+        /// <summary>
+
+        #region 机械臂页面按钮事件响应
+        /// <summary>
+        /// 单轴移动
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        public void BtnRobotOffsetMoveClick(object sender, EventArgs e)
+        {
+            Button btn = sender as Button;
+            btn.Enabled = false;
+            double distance = btn.Text[1] == '+' ? this.offsetMoveDistance : -this.offsetMoveDistance;
+            try
+            {
+                robot.Fcn09_SetSpeed(this.offsetMoveSpeed, this.offsetMoveSpeed);
+
+                switch (btn.Text[0])
+                {
+                    case 'X': robot.Fcn26_SingleAxisMove(this.offsetMoveSpeed, Robot.Axis.X, distance); break;
+                    case 'Y': robot.Fcn26_SingleAxisMove(this.offsetMoveSpeed, Robot.Axis.Y, distance); break;
+                    case 'Z': robot.Fcn26_SingleAxisMove(this.offsetMoveSpeed, Robot.Axis.Z, distance); break;
+                    case 'U': robot.Fcn26_SingleAxisMove(this.offsetMoveSpeed, Robot.Axis.U, distance); break;
+                    case 'V': robot.Fcn26_SingleAxisMove(this.offsetMoveSpeed, Robot.Axis.V, distance); break;
+                    case 'W': robot.Fcn26_SingleAxisMove(this.offsetMoveSpeed, Robot.Axis.W, distance); break;
+                }
+
+                // robot.Fcn04_ReadCurrentPosition();
+            }
+            catch (Exception)
+            {
+
+            }
+            finally
+            {
+                label1.Focus();
+                btn.Enabled = true;
+            }
+
+        }
+        /// <summary>
+        /// 手臂控制, 插值移动的速度选择点击事件
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void RadioBoxOffsetMoveClick(object sender, EventArgs e)
+        {
+            RadioButton rb = sender as RadioButton;
+            switch (rb.Tag.ToString())
+            {
+                case "offsetMoveDistance":
+                    this.offsetMoveDistance = Convert.ToDouble(rb.Text);
+                    break;
+
+                case "offsetMoveSpeed":
+                    this.offsetMoveSpeed = Convert.ToInt32(rb.Text);
+                    break;
+
+                case "positionMoveZSafe":
+                    this.positionMoveSafeZ = Convert.ToInt32(rb.Text);
+                    break;
+
+                case "positionMoveSpeed":
+                    this.positionMoveSpeed = Convert.ToInt32(rb.Text);
+                    break;
+            }
+        }
+        /// <summary>
+        /// 单轴运动点击事件
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void BtnSignalAxisMotionClick(object sender, EventArgs e)
+        {
+            Button btn = sender as Button;
+            btn.Enabled = false;
+            try
+            {
+                double distance = btn.Text[2] == '+' ? this.offsetMoveDistance : -this.offsetMoveDistance;
+                robot.Fcn09_SetSpeed(this.offsetMoveSpeed, this.offsetMoveSpeed);
+                robot.Fcn26_SingleAxisMove(this.offsetMoveSpeed,
+                    (Robot.Axis)Enum.Parse(typeof(Robot.Axis), btn.Text.Substring(0, 2)), distance);
+                // robot.Fcn04_ReadCurrentPosition();
+            }
+            catch (Exception)
+            {
+
+            }
+            finally
+            {
+                label1.Focus();
+                btn.Enabled = true;
+            }
+
+        }
+
+        /// <summary>
+        /// 手臂控制页面的按钮点击事件
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        private void RobotButtonClick(object sender, EventArgs e)
+        {
+            Button btn = sender as Button;
+            btn.Enabled = false;
+            try
+            {
+                switch (btn.Tag.ToString())
+                {
+                    case "RobotSFree":
+                        this.robot.Fcn01_JointState(Robot.JointState.Free);
+                        break;
+
+                    case "RobotSLock":
+                        this.robot.Fcn01_JointState(Robot.JointState.Lock);
+                        break;
+
+                    case "RobotRelink":
+                        //RobotInit();
+                        break;
+
+                    case "RobotSavePosition":
+                        {
+                            if (MessageBox.Show(GetText("IsSavePoint"), "Warning", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                            {
+                                int idx = Enum.GetNames(typeof(RobotPositionIndex)).ToList().FindIndex(x => x == CbPointName.Text);
+                                if (idx == -1) return;
+                                robot.Fcn06_SavePointHere(idx, config.Robot.Production);
+                            }
+                            //if (new MessageBoxUI("提示", "是否保存点位?", MessageBoxButtons.YesNo).ShowDialog() != DialogResult.Yes) return;
+
+                        }
+                        break;
+
+                    case "RobotPositionMove":
+                        {
+                            if (MessageBox.Show(GetText("IsMoveRobot"), "Warning", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                            {
+                                //if (new MessageBoxUI("提示", "是否开始移动手臂?", MessageBoxButtons.YesNo).ShowDialog() != DialogResult.Yes) return;
+                                var idx = Enum.Parse(typeof(RobotPositionIndex), CbPointName.Text);
+                                //int idx = Enum.GetNames(typeof(RobotPositionIndex)).ToList().FindIndex(x => x == CbPointName.Text);
+                                //if (idx == -1) return;
+                                if (string.IsNullOrEmpty(CbMotionType.Text)) return;
+                                Robot.MoveMode moveMode = (Robot.MoveMode)Enum.Parse(typeof(Robot.MoveMode), CbMotionType.Text);
+                                robot.Fcn20_MoveToPoint(this.positionMoveSpeed, moveMode, (int)idx, this.positionMoveSafeZ);
+                            }
+
+                        }
+
+                        break;
+                    case "RobotStartMove":
+                        {
+                            var position = GetPositionFromGroupbox(GrpPositionMove);
+                            robot.Fcn24_GoToPosition(this.offsetMoveSpeed,
+                                position.X, position.Y, position.Z,
+                                position.U, position.V, position.W,
+                                position.Hand, position.Elbow, position.Wrist
+                                );
+                        }
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message + "\r\n" + ex.StackTrace);
+            }
+            finally
+            {
+                label1.Focus();
+                btn.Enabled = true;
+            }
+        }
+        #endregion
+
+        #region 两个辅助函数, 用以从GroupBox中获取或设置点位值
+        //GroupBox中需要有NumberUpdown控件, 其Tag属性分别为x,y,z,u,v,w,ha,el,wr
+        private void ShowPositionToGroupbox(GroupBox box, Position position)
+        {
+            foreach (Control ctl in box.Controls)
+            {
+                if (ctl.GetType() == typeof(NumericUpDown))
+                {
+                    var num = ctl as NumericUpDown;
+                    switch (num.Tag.ToString())
+                    {
+                        case "x": num.Value = (decimal)position.X; break;
+                        case "y": num.Value = (decimal)position.Y; break;
+                        case "z": num.Value = (decimal)position.Z; break;
+                        case "u": num.Value = (decimal)position.U; break;
+                        case "v": num.Value = (decimal)position.V; break;
+                        case "w": num.Value = (decimal)position.W; break;
+                        case "ha": num.Value = (int)position.Hand; break;
+                        case "el": num.Value = (int)position.Elbow; break;
+                        case "wr": num.Value = (int)position.Wrist; break;
+
+                    }
+                }
+            }
+        }
+
+        private Position GetPositionFromGroupbox(GroupBox box)
+        {
+            var position = new Position();
+            foreach (Control ctl in box.Controls)
+            {
+                if (ctl.GetType() == typeof(NumericUpDown))
+                {
+                    var num = ctl as NumericUpDown;
+                    switch (num.Tag.ToString())
+                    {
+                        case "x": position.X = (double)num.Value; break;
+                        case "y": position.Y = (double)num.Value; break;
+                        case "z": position.Z = (double)num.Value; break;
+                        case "u": position.U = (double)num.Value; break;
+                        case "v": position.V = (double)num.Value; break;
+                        case "w": position.W = (double)num.Value; break;
+                        case "ha": position.Hand = (Robot.Hand)num.Value; break;
+                        case "el": position.Elbow = (Robot.Elbow)num.Value; break;
+                        case "wr": position.Wrist = (Robot.Wrist)num.Value; break;
+                    }
+                }
+            }
+
+            return position;
+        }
+        #endregion
+
+        #endregion
+        private void SetImageSizeMode(PictureBox pImage)
+        {
+            if (pImage == null) return;
+            System.Drawing.Image imgResult = pImage.Image;
+            if (imgResult != null)
+            {
+                //控制图片显示方式
+                if (imgResult.Width > pImage.Width || imgResult.Height > pImage.Height)
+                {
+                    pImage.SizeMode = PictureBoxSizeMode.Zoom;
+                }
+                else
+                {
+                    pImage.SizeMode = PictureBoxSizeMode.CenterImage;
+                }
+            }
+        }
+
+        #region TCP连接
+        private static Socket socket;
+        private static Socket socket1;
+        private static void StartClient(string ip, int CommandPort)
+        {
+            //实例化一个TCP协议的Socket对象
+            socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            //服务端的地址和端口
+            IPEndPoint iPEndPoint = new IPEndPoint(IPAddress.Parse(ip), CommandPort);
+            try
+            {
+                //连接远程的服务端
+                socket.Connect(iPEndPoint);
+                Console.WriteLine("Connect Server Success");
+
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Connect Fail：" + ex.ToString());
+                return;
+            }
+        }
+ 
+        public void TcpRobot(string robottext)
+        {
+            //回传信息给手臂进行对应的操作
+            byte[] buffer = Encoding.UTF8.GetBytes(robottext);
+            socket.Send(buffer);
+            string stime = DateTime.Now.ToString("yyyyMMddHHmmssff");
+            log.write($"{robottext}-{stime}---发送信息");
+            //接收回传信息
+            Thread.Sleep(400);
+            byte[] buffer1 = new byte[1024];
+            int length = socket.Receive(buffer1);
+            strq = Encoding.UTF8.GetString(buffer1, 0, length);
+            string stime1 = DateTime.Now.ToString("yyyyMMddHHmmssff");
+            Thread.Sleep(10);
+            log.write($"{strq}-{stime1}---接收信息");
+
+
+        }
+        private static void StartClient1()
+        {
+            //实例化一个TCP协议的Socket对象
+            socket1 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            //服务端的地址和端口
+            IPEndPoint iPEndPoint1 = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 12345);
+            try
+            {
+                //连接远程的服务端
+                socket1?.Connect(iPEndPoint1);
+                Console.WriteLine("连接服务端成功");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("连接异常：" + ex.ToString());
+            }
+        }
+        public void TcpRobot1(string robottext)
+        {
+            //回传信息给手臂进行对应的操作
+            byte[] buffer = Encoding.UTF8.GetBytes(robottext);
+            if (IsConnectionActive(socket1))
+            {
+                socket1?.Send(buffer);
+                //接收回传信息
+                Thread.Sleep(400);
+                byte[] buffer1 = new byte[1024];
+                int length = socket1.Receive(buffer1);
+                strq = Encoding.UTF8.GetString(buffer1, 0, length);
+            }
+            else 
+            {
+                socket1?.Close();
+                Thread.Sleep(500);
+                try
+                {
+                    socket1 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+                    socket1?.Connect(IPAddress.Parse("127.0.0.1"), 12345);
+                    Console.WriteLine("重连服务端成功");
+                    socket1?.Send(buffer);
+                    //接收回传信息
+                    Thread.Sleep(400);
+                    byte[] buffer1 = new byte[1024];
+                    int length = socket1.Receive(buffer1);
+                    strq = Encoding.UTF8.GetString(buffer1, 0, length);
+                }
+                catch (Exception )
+                {
+                    Console.WriteLine("服务端重连失败，请确认服务端端口状态" );
+                }
+            }
+        }
+        #endregion
+
+        public bool IsConnectionActive(Socket client)
+        {
+            try
+            {
+                if (client != null&& client.Connected)
+                {
+                    if (client.Poll(0, SelectMode.SelectRead)) //使用Peek測試連線是否仍存在
+
+                    {
+                        byte[] checkconn = new byte[1];
+                        if (client.Receive(checkconn, SocketFlags.Peek) == 0)
+                        {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+            return false;
+        }
+
+        private void button1_Click(object sender, EventArgs e)
+        {
+            AllowCaptureForPredict = true;
+            cap1 = (BaslerVideoCapture)cbDevice.SelectedItem;
+            cap1.index = int.Parse(TBXIndex.Text);
+            if (CameraCapture(cap1))
+            {
+
+            }
+        }
+
+
+        public void SetLanguage()
+        {
+            Thread.CurrentThread.CurrentUICulture = cultureinfo;
+            ComponentResourceManager rs = new ComponentResourceManager(typeof(EdgeToolForm));
+            //rs.ApplyResources(tsmiStartButton, tsmiStartButton.Name);
+            //rs.ApplyResources(tsmiRun, tsmiRun.Name);
+            rs.ApplyResources(tsmiCollectImageMode, tsmiCollectImageMode.Name);
+            rs.ApplyResources(tsmiCollectImagepoint, tsmiCollectImagepoint.Name);
+            rs.ApplyResources(tsmiNormalTest, tsmiNormalTest.Name);
+            rs.ApplyResources(groupBox1, groupBox1.Name);
+            rs.ApplyResources(groupBox3, groupBox3.Name);
+            rs.ApplyResources(groupBox6, groupBox6.Name);
+            rs.ApplyResources(btnAddROI, btnAddROI.Name);
+            rs.ApplyResources(btnDeleteROI, btnDeleteROI.Name);
+            rs.ApplyResources(btnWidthBeDivide, btnWidthBeDivide.Name);
+            rs.ApplyResources(btnHeightBeDivide, btnHeightBeDivide.Name);
+            foreach (Control fatherctl in this.Controls)
+            {
+
+                rs.ApplyResources(fatherctl, fatherctl.Name);
+                if (fatherctl.HasChildren)
+                {
+                    foreach (Control sonctl in fatherctl.Controls)
+                    {
+                        rs.ApplyResources(sonctl, sonctl.Name);
+                        if (sonctl.HasChildren)
+                        {
+                            foreach (Control subctl in sonctl.Controls)
+                            {
+                                rs.ApplyResources(subctl, subctl.Name);
+                                if (subctl.HasChildren)
+                                {
+                                    foreach (Control ctl in subctl.Controls)
+                                    {
+                                        rs.ApplyResources(ctl, ctl.Name);
+                                        if (ctl.HasChildren)
+                                        {
+                                            foreach (Control ctl1 in ctl.Controls)
+                                            {
+                                                rs.ApplyResources(ctl1, ctl1.Name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+            }
+            foreach (Control fatherctl1 in panel2.Controls)
+            {
+                rs.ApplyResources(fatherctl1, fatherctl1.Name);
+                if (fatherctl1.HasChildren)
+                {
+                    foreach (Control sonctl1 in fatherctl1.Controls)
+                    {
+                        rs.ApplyResources(sonctl1, sonctl1.Name);
+                        if (sonctl1.HasChildren)
+                        {
+                            foreach (Control subctl1 in sonctl1.Controls)
+                            {
+                                rs.ApplyResources(subctl1, subctl1.Name);
+                                if (subctl1.HasChildren)
+                                {
+                                    foreach (Control ctl1 in subctl1.Controls)
+                                    {
+                                        rs.ApplyResources(ctl1, ctl1.Name);
+                                        if (ctl1.HasChildren)
+                                        {
+                                            foreach (Control ctl11 in ctl1.Controls)
+                                            {
+                                                rs.ApplyResources(ctl11, ctl11.Name);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+
+        private void tsChinese_Click(object sender, EventArgs e)
+        {
+            
+            cultureinfo = new CultureInfo("zh");
+            tsmiStartButton.Text = tsmiStartButton.Text.Contains("Start") ? GetText("tsmiStartButton.Text") : GetText("Stop");
+            if (tsmiRun.Text.Contains("Run"))
+            { tsmiRun.Text = GetText("tsmiRun.Text"); }
+            else if (tsmiRun.Text.Contains("Test mode"))
+            { tsmiRun.Text = GetText("tsmiNormalTest.Text"); }
+            else if (tsmiRun.Text.Contains("Collect image mode"))
+            { tsmiRun.Text = GetText("tsmiCollectImageMode.Text"); }
+            else
+            {
+                tsmiRun.Text = GetText("tsmiCollectImagepoint.Text");
+            }
+            SetLanguage();
+        }
+
+        private void tsEnglish_Click(object sender, EventArgs e)
+        {
+            cultureinfo = new CultureInfo("en");
+            tsmiStartButton.Text = tsmiStartButton.Text.Contains("Start") ? GetText("tsmiStartButton.Text") : GetText("Stop");
+            if (tsmiRun.Text.Contains("Run"))
+            { tsmiRun.Text = GetText("tsmiRun.Text"); }
+            else if (tsmiRun.Text.Contains("Test mode"))
+            { tsmiRun.Text = GetText("tsmiNormalTest.Text"); }
+            else if (tsmiRun.Text.Contains("Collect image mode"))
+            { tsmiRun.Text = GetText("tsmiCollectImageMode.Text"); }
+            else
+            {
+                tsmiRun.Text = GetText("tsmiCollectImagepoint.Text");
+            }
+            SetLanguage();
+        }
+
+        private void tsVistnamese_Click(object sender, EventArgs e)
+        {
+            cultureinfo = new CultureInfo("vi");
+            tsmiStartButton.Text = tsmiStartButton.Text.Contains("Start") ? GetText("tsmiStartButton.Text") : GetText("Stop");
+            if (tsmiRun.Text.Contains("Run"))
+            { tsmiRun.Text = GetText("tsmiRun.Text"); }
+            else if (tsmiRun.Text.Contains("Test mode"))
+            { tsmiRun.Text = GetText("tsmiNormalTest.Text"); }
+            else if (tsmiRun.Text.Contains("Collect image mode"))
+            { tsmiRun.Text = GetText("tsmiCollectImageMode.Text"); }
+            else
+            {
+                tsmiRun.Text = GetText("tsmiCollectImagepoint.Text");
+            }
+            SetLanguage();
+        }
+
+        public string GetText(string Key)
+        {
+            ResourceManager rs = new ResourceManager("ImageCapture.EdgeToolForm", Assembly.GetExecutingAssembly());
+
+            string text = rs.GetString(Key, cultureinfo);
+            if (string.IsNullOrEmpty(text))
+            {
+                Text = Key;
+            }
+            return text;
+        }
+    }
+
+}
+
